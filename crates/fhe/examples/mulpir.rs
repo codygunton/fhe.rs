@@ -248,7 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
     let mut writer = csv::Writer::from_writer(file);
 
-    writer.write_record(&mut[
+    writer.write_record(&mut [
         "database_size",
         "elements_size",
         "degree",
@@ -257,15 +257,46 @@ fn main() -> Result<(), Box<dyn Error>> {
         "response_time",
         "response_size",
     ])?;
+
+    // four cities
     run_example(10000, 40000, 1 << 14, &mut writer);
+    run_example(10000, 45000, 1 << 15, &mut writer);
     run_example(10000, 50000, 1 << 15, &mut writer);
-    run_example(15000, 60000, 1 << 15, &mut writer);
+    run_example(10000, 55000, 1 << 15, &mut writer);
+    run_example(10000, 60000, 1 << 15, &mut writer);
+    run_example(10000, 65000, 1 << 15, &mut writer);
     run_example(15000, 30000, 1 << 14, &mut writer);
+    run_example(15000, 35000, 1 << 14, &mut writer);
     run_example(15000, 40000, 1 << 14, &mut writer);
+    run_example(15000, 45000, 1 << 15, &mut writer);
     run_example(15000, 50000, 1 << 15, &mut writer);
+    run_example(15000, 55000, 1 << 15, &mut writer);
     run_example(20000, 20000, 1 << 14, &mut writer);
+    run_example(20000, 25000, 1 << 14, &mut writer);
     run_example(20000, 30000, 1 << 14, &mut writer);
+    run_example(20000, 35000, 1 << 14, &mut writer);
     run_example(20000, 40000, 1 << 14, &mut writer);
-    run_example(700, 606000, 1 << 18, &mut writer);
+    run_example(20000, 45000, 1 << 15, &mut writer);
+    // run_example(700, 606000, 1 << 18, &mut writer);
+
+    // // one city ~ 1/4 of the data
+    // run_example(10000 / 2, 40000 / 2, 1 << 13, &mut writer);
+    // run_example(10000 / 2, 45000 / 2, 1 << 14, &mut writer);
+    // run_example(10000 / 2, 50000 / 2, 1 << 14, &mut writer);
+    // run_example(10000 / 2, 55000 / 2, 1 << 14, &mut writer);
+    // run_example(10000 / 2, 60000 / 2, 1 << 14, &mut writer);
+    // run_example(10000 / 2, 65000 / 2, 1 << 14, &mut writer);
+    // run_example(15000 / 2, 30000 / 2, 1 << 13, &mut writer);
+    // run_example(15000 / 2, 35000 / 2, 1 << 13, &mut writer);
+    // run_example(15000 / 2, 40000 / 2, 1 << 13, &mut writer);
+    // run_example(15000 / 2, 45000 / 2, 1 << 14, &mut writer);
+    // run_example(15000 / 2, 50000 / 2, 1 << 14, &mut writer);
+    // run_example(15000 / 2, 55000 / 2, 1 << 14, &mut writer);
+    // run_example(20000 / 2, 20000 / 2, 1 << 13, &mut writer);
+    // run_example(20000 / 2, 25000 / 2, 1 << 13, &mut writer);
+    // run_example(20000 / 2, 30000 / 2, 1 << 13, &mut writer);
+    // run_example(20000 / 2, 35000 / 2, 1 << 13, &mut writer);
+    // run_example(20000 / 2, 40000 / 2, 1 << 13, &mut writer);
+    // run_example(20000 / 2, 45000 / 2, 1 << 14, &mut writer);
     Ok(())
 }
