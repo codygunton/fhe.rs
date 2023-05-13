@@ -48,10 +48,10 @@ fn print_notice_and_exit(max_element_size: usize, error: Option<String>) {
 fn run_example(
     database_size: usize,
     elements_size: usize,
+    degree: usize,
     writer: &mut csv::Writer<std::fs::File>,
 ) -> Result<(), Box<dyn Error>> {
     // We use the parameters reported in Table 1 of https://eprint.iacr.org/2019/1483.pdf.
-    let degree = 1 << 14;
     let plaintext_modulus: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
     let moduli_sizes = [50, 55, 55];
 
@@ -257,9 +257,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         "response_time",
         "response_size",
     ])?;
-    run_example(1000, 18800, &mut writer);
-    run_example(1000, 28800, &mut writer);
-    run_example(2000, 18800, &mut writer);
-    run_example(2000, 28800, &mut writer);
+    run_example(10000, 40000, 1 << 14, &mut writer);
+    run_example(10000, 50000, 1 << 15, &mut writer);
+    run_example(15000, 60000, 1 << 15, &mut writer);
+    run_example(15000, 30000, 1 << 14, &mut writer);
+    run_example(15000, 40000, 1 << 14, &mut writer);
+    run_example(15000, 50000, 1 << 15, &mut writer);
+    run_example(20000, 20000, 1 << 14, &mut writer);
+    run_example(20000, 30000, 1 << 14, &mut writer);
+    run_example(20000, 40000, 1 << 14, &mut writer);
+    run_example(700, 606000, 1 << 18, &mut writer);
     Ok(())
 }
