@@ -274,14 +274,21 @@ void DatabaseManager::reorganize_for_pir() {
     const size_t target_size = db_.dims.dim1 * db_.dims.dim2;
 
     if (db_.plaintexts.size() < target_size) {
-        // Pad with zero plaintexts (encode all-zero coefficient vectors)
+        // Pad with zero plaintexts using direct polynomial coefficients.
+        // We initialize via the batch encoder (to set internal state),
+        // then overwrite with zeros to ensure polynomial coefficient form.
         std::vector<uint64_t> zero_coeffs(BFVConfig::POLY_DEGREE, 0);
+        mulpir::HEEncoder encoder(impl_->context);
         while (db_.plaintexts.size() < target_size) {
             Plaintext zero_pt(impl_->context);
-            mulpir::HEEncoder encoder(impl_->context);
             encoder.encode(zero_pt, zero_coeffs);
+            zero_pt.store_in_device();
+            cudaMemcpy(zero_pt.data(), zero_coeffs.data(),
+                       BFVConfig::POLY_DEGREE * sizeof(uint64_t),
+                       cudaMemcpyHostToDevice);
             db_.plaintexts.push_back(std::move(zero_pt));
         }
+        cudaDeviceSynchronize();
     }
 
     // The current layout is already row-major (row * dim2 + col),

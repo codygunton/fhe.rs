@@ -122,16 +122,38 @@ Plaintext TileEncoder::encode_and_ntt(const std::vector<uint64_t>& coeffs) {
         throw std::invalid_argument("Coefficient vector must have POLY_DEGREE elements");
     }
 
+    // Write polynomial coefficients directly to the plaintext, bypassing
+    // HEonGPU's batch encoder. The MulPIR scheme requires polynomial encoding
+    // (raw coefficient form), not the batch/SIMD encoding that HEonGPU's
+    // HEEncoder provides.
+    //
+    // We encode a dummy vector via the batch encoder to initialize the
+    // plaintext's internal state, then overwrite the device data with our
+    // actual polynomial coefficients.
+    std::vector<uint64_t> zeros(config_.POLY_DEGREE, 0);
     Plaintext pt(impl_->context);
-    impl_->encoder.encode(pt, coeffs);
+    impl_->encoder.encode(pt, zeros);
+
+    // Overwrite with raw polynomial coefficients
+    pt.store_in_device();
+    cudaMemcpy(pt.data(), coeffs.data(),
+               config_.POLY_DEGREE * sizeof(uint64_t),
+               cudaMemcpyHostToDevice);
+    cudaDeviceSynchronize();
     return pt;
 }
 
 std::vector<uint64_t> TileEncoder::intt_and_decode(const Plaintext& pt) {
-    std::vector<uint64_t> coeffs;
-    // HEonGPU decode takes non-const reference for GPU memory management
+    // Read raw polynomial coefficients directly from the plaintext, bypassing
+    // HEonGPU's batch decoder. This is the inverse of encode_and_ntt above.
     auto& pt_ref = const_cast<Plaintext&>(pt);
-    impl_->encoder.decode(coeffs, pt_ref);
+    pt_ref.store_in_device();
+
+    std::vector<uint64_t> coeffs(config_.POLY_DEGREE);
+    cudaMemcpy(coeffs.data(), pt_ref.data(),
+               config_.POLY_DEGREE * sizeof(uint64_t),
+               cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
     return coeffs;
 }
 

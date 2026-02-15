@@ -51,26 +51,33 @@ size_t QueryExpander::target_size() const {
 
 void QueryExpander::precompute_monomials() {
     // Precompute monomials for the expansion algorithm.
-    // monomial[l] = x^{-(degree >> l)} in the polynomial ring
+    // monomial[l] = -x^{degree - 2^l} in the polynomial ring Z_t[x]/(x^N + 1)
     //
-    // In coefficient form: coefficient (degree - (degree >> l)) is 1, rest are 0
-    // After NTT encoding, this becomes a multiplication mask.
+    // This matches fhe.rs: monomial[degree - (1 << l)] = -1
+    // In unsigned mod-t representation, -1 is represented as (t - 1).
 
     const size_t degree = BFVConfig::POLY_DEGREE;
     impl_->monomials.resize(expansion_level_);
 
     for (size_t l = 0; l < expansion_level_; ++l) {
-        // Position of the nonzero coefficient
-        const size_t shift = degree >> l;
-        const size_t coeff_pos = (degree - shift) % degree;
+        // Position of the nonzero coefficient: degree - 2^l
+        const size_t coeff_pos = degree - (1ULL << l);
 
-        // Create coefficient vector with single 1 at coeff_pos
+        // Create coefficient vector with -1 (= t-1 mod t) at coeff_pos
         std::vector<uint64_t> coeffs(degree, 0);
-        coeffs[coeff_pos] = 1;
+        coeffs[coeff_pos] = BFVConfig::PLAINTEXT_MODULUS - 1;
 
-        // Encode to plaintext
+        // Write polynomial coefficients directly, bypassing HEonGPU's batch
+        // encoder. The MulPIR expansion algorithm requires actual polynomial
+        // monomials (X^k), not batch-encoded slot vectors.
+        std::vector<uint64_t> zeros(degree, 0);
         impl_->monomials[l] = Plaintext(impl_->context);
-        impl_->encoder.encode(impl_->monomials[l], coeffs);
+        impl_->encoder.encode(impl_->monomials[l], zeros);
+        impl_->monomials[l].store_in_device();
+        cudaMemcpy(impl_->monomials[l].data(), coeffs.data(),
+                   degree * sizeof(uint64_t),
+                   cudaMemcpyHostToDevice);
+        cudaDeviceSynchronize();
     }
 }
 
