@@ -12,9 +12,9 @@ namespace mulpir::test {
 inline HEContextPtr create_test_context() {
     auto context = heongpu::GenHEContext<heongpu::Scheme::BFV>();
     context->set_poly_modulus_degree(BFVConfig::POLY_DEGREE);
-    context->set_coeff_modulus_bit_sizes(
-        {BFVConfig::MODULI_BITS[0], BFVConfig::MODULI_BITS[1], BFVConfig::MODULI_BITS[2]},
-        {BFVConfig::P_MODULI_BITS[0]}
+    context->set_coeff_modulus_values(
+        {BFVConfig::Q_MODULI[0], BFVConfig::Q_MODULI[1], BFVConfig::Q_MODULI[2]},
+        {BFVConfig::P_MODULUS}
     );
     context->set_plain_modulus(BFVConfig::PLAINTEXT_MODULUS);
     context->generate();

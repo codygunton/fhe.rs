@@ -27,9 +27,9 @@ void PIRServer::initialize() {
     // Create HEonGPU BFV context with parameters matching fhe.rs
     context_ = heongpu::GenHEContext<heongpu::Scheme::BFV>();
     context_->set_poly_modulus_degree(BFVConfig::POLY_DEGREE);
-    context_->set_coeff_modulus_bit_sizes(
-        {BFVConfig::MODULI_BITS[0], BFVConfig::MODULI_BITS[1], BFVConfig::MODULI_BITS[2]},
-        {BFVConfig::P_MODULI_BITS[0]}
+    context_->set_coeff_modulus_values(
+        {BFVConfig::Q_MODULI[0], BFVConfig::Q_MODULI[1], BFVConfig::Q_MODULI[2]},
+        {BFVConfig::P_MODULUS}
     );
     context_->set_plain_modulus(BFVConfig::PLAINTEXT_MODULUS);
     context_->generate();
