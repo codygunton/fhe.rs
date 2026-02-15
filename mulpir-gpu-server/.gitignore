@@ -1,0 +1,49 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# Test vectors (generated, large files)
+test_vectors/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+
+# Executables
+mulpir_server
+mulpir_benchmark
+mulpir_tests
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Package files
+*.tar.gz
+*.zip
+
+# Logs
+*.log
+
+# Core dumps
+core
+core.*
+
+# CUDA profiler output
+*.nvvp
+*.qdrep
+*.sqlite

@@ -1,0 +1,116 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace mulpir {
+
+/// BFV encryption parameters matching fhe.rs MulPIR configuration.
+/// These parameters must match exactly for client-server compatibility.
+struct BFVConfig {
+    /// Polynomial degree (N) - determines security and capacity.
+    static constexpr size_t POLY_DEGREE = 8192;
+
+    /// Plaintext modulus - matches fhe.rs: (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1
+    /// This is a prime that allows efficient coefficient packing.
+    static constexpr uint64_t PLAINTEXT_MODULUS = 0x1B4001;  // 1785857
+
+    /// Number of bits per coefficient for data encoding.
+    /// floor(log2(PLAINTEXT_MODULUS)) = 20 bits
+    static constexpr size_t BITS_PER_COEFF = 20;
+
+    /// Coefficient moduli bit sizes (Q) for the RNS representation.
+    /// These match the fhe.rs configuration: [50, 55, 55]
+    static constexpr std::array<int, 3> MODULI_BITS = {50, 55, 55};
+
+    /// Auxiliary moduli bit sizes (P) for key switching in HEonGPU.
+    /// HEonGPU requires at least one P modulus (Q_tilda = Q x P).
+    static constexpr std::array<int, 1> P_MODULI_BITS = {55};
+
+    /// Number of RNS moduli.
+    static constexpr size_t NUM_MODULI = 3;
+
+    /// Ciphertext level after client encryption (one modulus dropped).
+    static constexpr size_t CIPHERTEXT_LEVEL = 1;
+
+    /// Key level for expansion operations (uses all moduli).
+    static constexpr size_t KEY_LEVEL = 0;
+
+    /// Maximum bytes that fit in a single plaintext.
+    /// BITS_PER_COEFF * POLY_DEGREE / 8 = 20 * 8192 / 8 = 20480 bytes
+    static constexpr size_t BYTES_PER_PLAINTEXT = (BITS_PER_COEFF * POLY_DEGREE) / 8;
+
+    /// Compute the number of plaintexts needed to encode data of given size.
+    static constexpr size_t plaintexts_for_bytes(size_t bytes) {
+        return (bytes + BYTES_PER_PLAINTEXT - 1) / BYTES_PER_PLAINTEXT;
+    }
+
+    /// Compute number of elements that fit per plaintext given element size.
+    static constexpr size_t elements_per_plaintext(size_t element_size_bytes) {
+        return BYTES_PER_PLAINTEXT / element_size_bytes;
+    }
+};
+
+/// Server configuration for database and query processing.
+struct ServerConfig {
+    /// Maximum number of database elements to support.
+    size_t max_database_elements = 100000;
+
+    /// Size of each tile/element in bytes.
+    /// Default: 30 KiB for GIS tiles.
+    size_t tile_size_bytes = 30720;
+
+    /// GPU memory limit in gigabytes.
+    /// Default: 28 GB (leaving headroom on 32GB GPU).
+    size_t gpu_memory_limit_gb = 28;
+
+    /// Enable concurrent query processing.
+    bool enable_concurrent_queries = true;
+
+    /// Maximum number of concurrent queries (if enabled).
+    size_t max_concurrent_queries = 4;
+
+    /// Network port for the server.
+    uint16_t port = 8080;
+
+    /// Path to the database file.
+    std::string database_path;
+
+    /// Compute estimated GPU memory usage for given database size.
+    size_t estimated_gpu_memory_mb(size_t num_tiles) const {
+        // Each tile needs ceil(tile_size / bytes_per_pt) plaintexts
+        const size_t pts_per_tile = BFVConfig::plaintexts_for_bytes(tile_size_bytes);
+
+        // Each plaintext in NTT form: 2 moduli * 8192 coeffs * 8 bytes = 128 KB
+        // (At ciphertext level 1, we have 2 moduli)
+        const size_t bytes_per_pt_encoded = 2 * BFVConfig::POLY_DEGREE * sizeof(uint64_t);
+
+        // Total database size
+        const size_t db_bytes = num_tiles * pts_per_tile * bytes_per_pt_encoded;
+
+        // Keys: ~250 MB for Galois + Relin
+        const size_t key_bytes = 250 * 1024 * 1024;
+
+        // Working memory: ~2 GB for expanded queries and intermediates
+        const size_t working_bytes = 2ULL * 1024 * 1024 * 1024;
+
+        return (db_bytes + key_bytes + working_bytes) / (1024 * 1024);
+    }
+
+    /// Compute maximum tiles that fit in GPU memory.
+    size_t max_tiles_for_memory() const {
+        const size_t available_mb = gpu_memory_limit_gb * 1024;
+        const size_t overhead_mb = 250 + 2048;  // Keys + working memory
+        const size_t db_mb = available_mb - overhead_mb;
+
+        const size_t pts_per_tile = BFVConfig::plaintexts_for_bytes(tile_size_bytes);
+        const size_t bytes_per_pt = 2 * BFVConfig::POLY_DEGREE * sizeof(uint64_t);
+        const size_t bytes_per_tile = pts_per_tile * bytes_per_pt;
+
+        return (db_mb * 1024 * 1024) / bytes_per_tile;
+    }
+};
+
+}  // namespace mulpir
