@@ -35,7 +35,7 @@ cargo run --manifest-path "${FHE_RS_DIR}/Cargo.toml" \
     -- \
     --output-dir "$OUTPUT_DIR" \
     --num-tiles 100 \
-    --tile-size 1024
+    --tile-size 20480
 
 echo ""
 echo "Test vectors generated at: $OUTPUT_DIR"
