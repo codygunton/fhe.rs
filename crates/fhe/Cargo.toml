@@ -75,3 +75,6 @@ name = "rgsw"
 
 [[example]]
 name = "voting"
+
+[[example]]
+name = "generate_test_vectors"

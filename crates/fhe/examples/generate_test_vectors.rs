@@ -1,13 +1,18 @@
 //! Generates test vectors for MulPIR GPU server validation.
 //!
 //! This utility creates a deterministic set of test data including:
-//! - Synthetic database tiles
-//! - BFV keys (Galois and relinearization)
-//! - Encrypted PIR queries for specific indices
-//! - Expected plaintext results
+//! - Synthetic database tiles (tiles.bin)
+//! - Secret key raw coefficients (secret_key.bin)
+//! - PIR parameters as JSON (params.json)
+//! - Expected plaintext results (expected_{idx}.bin)
 //!
-//! Run with: cargo run --example generate_test_vectors -- --output-dir ./test_vectors
-#![expect(missing_docs, reason = "examples/benches/tests omit docs by design")]
+//! The C++ side (HEonGPU) loads these to verify the GPU PIR implementation
+//! produces correct results by importing the secret key, generating its own
+//! query, and comparing decrypted output against expected results.
+//!
+//! Run with:
+//!   cargo run --release -p fhe --example generate_test_vectors -- \
+//!     --output-dir mulpir-gpu-server/test_vectors --num-tiles 100 --tile-size 20480
 #![expect(
     clippy::indexing_slicing,
     reason = "performance or example code relies on validated indices"
@@ -15,22 +20,15 @@
 
 mod util;
 
-use anyhow::{Context, Result};
 use clap::Parser;
-use fhe::bfv::{
-    self, BfvParameters, BfvParametersBuilder, Ciphertext, EvaluationKey, EvaluationKeyBuilder,
-    Plaintext, RelinearizationKey, SecretKey,
-};
-use fhe_traits::{FheEncoder, FheEncrypter, Serialize};
-use fhe_util::{inverse, transcode_from_bytes};
-use rand::{Rng, SeedableRng};
+use fhe::bfv::{self, BfvParametersBuilder};
+use fhe_traits::Serialize;
+use prost::Message;
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use serde::Serialize as SerdeSerialize;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tracing::{info, warn};
 use util::number_elements_per_plaintext;
 
 /// Command-line arguments for the test vector generator.
@@ -46,45 +44,30 @@ struct Args {
     #[arg(long, default_value = "100")]
     num_tiles: usize,
 
-    /// Size of each tile in bytes.
-    #[arg(long, default_value = "30720")]
+    /// Size of each tile in bytes (max 20480 for degree=8192, t=1785857).
+    #[arg(long, default_value = "20480")]
     tile_size: usize,
 
     /// Random seed for deterministic generation.
     #[arg(long, default_value = "12345")]
     seed: u64,
 
-    /// Indices to generate queries for (comma-separated).
+    /// Indices to generate expected results for (comma-separated).
     /// If not specified, uses: 0, 1, dim1, dim1*dim2-1, 42
     #[arg(long, value_delimiter = ',')]
     query_indices: Option<Vec<usize>>,
 }
 
-/// BFV parameters matching the GPU server configuration.
-#[derive(SerdeSerialize)]
-struct ParamsJson {
-    poly_degree: usize,
-    plaintext_modulus: u64,
-    moduli_bits: Vec<usize>,
-    num_tiles: usize,
-    tile_size: usize,
-    elements_per_plaintext: usize,
-    num_rows: usize,
-    dim1: usize,
-    dim2: usize,
-    expansion_level: usize,
-}
-
-fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
-
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    info!("MulPIR Test Vector Generator");
-    info!("Output: {:?}", args.output_dir);
-    info!("Tiles: {} x {} bytes", args.num_tiles, args.tile_size);
-    info!("Seed: {}", args.seed);
+    println!("MulPIR Test Vector Generator");
+    println!("  Output: {:?}", args.output_dir);
+    println!(
+        "  Tiles: {} x {} bytes",
+        args.num_tiles, args.tile_size
+    );
+    println!("  Seed: {}", args.seed);
 
     // BFV parameters matching the GPU server
     let degree = 8192;
@@ -94,28 +77,34 @@ fn main() -> Result<()> {
     // Validate parameters
     let max_element_size = ((plaintext_modulus.ilog2() as usize) * degree) / 8;
     if args.tile_size > max_element_size {
-        anyhow::bail!(
+        return Err(format!(
             "Tile size {} exceeds maximum {} for these BFV parameters",
-            args.tile_size,
-            max_element_size
-        );
+            args.tile_size, max_element_size
+        )
+        .into());
     }
 
     // Initialize deterministic RNG
     let mut rng = ChaCha20Rng::seed_from_u64(args.seed);
 
     // Generate synthetic tiles (deterministic based on seed)
-    info!("Generating {} synthetic tiles...", args.num_tiles);
+    println!("Generating {} synthetic tiles...", args.num_tiles);
     let tiles = generate_synthetic_tiles(args.num_tiles, args.tile_size, &mut rng);
 
     // Build BFV parameters
-    info!("Building BFV parameters...");
+    println!("Building BFV parameters...");
     let params = BfvParametersBuilder::new()
         .set_degree(degree)
         .set_plaintext_modulus(plaintext_modulus)
         .set_moduli_sizes(&moduli_sizes)
-        .build_arc()
-        .context("Failed to build BFV parameters")?;
+        .build_arc()?;
+
+    // Extract actual Q prime values from the built parameters
+    let q_primes: Vec<u64> = params.moduli().to_vec();
+    println!("Q primes: {:?}", q_primes);
+    for (i, q) in q_primes.iter().enumerate() {
+        println!("  q[{}] = {} (0x{:X})", i, q, q);
+    }
 
     // Compute PIR dimensions
     let plaintext_nbits = plaintext_modulus.ilog2() as usize;
@@ -126,21 +115,16 @@ fn main() -> Result<()> {
     let dim2 = num_rows.div_ceil(dim1);
     let expansion_level = (dim1 + dim2).next_power_of_two().ilog2() as usize;
 
-    info!("PIR dimensions: {}x{} (expansion level {})", dim1, dim2, expansion_level);
+    println!(
+        "PIR dimensions: {}x{} (expansion level {})",
+        dim1, dim2, expansion_level
+    );
+    println!("  elements_per_plaintext = {}", elements_per_plaintext);
+    println!("  num_rows = {}", num_rows);
 
-    // Generate keys
-    info!("Generating keys...");
-    let sk = SecretKey::random(&params, &mut rng);
-
-    let ek = EvaluationKeyBuilder::new_leveled(&sk, 1, 0)
-        .context("Failed to create evaluation key builder")?
-        .enable_expansion(expansion_level)
-        .context("Failed to enable expansion")?
-        .build(&mut rng)
-        .context("Failed to build evaluation key")?;
-
-    let rk = RelinearizationKey::new_leveled(&sk, 1, 1, &mut rng)
-        .context("Failed to build relinearization key")?;
+    // Generate secret key
+    println!("Generating secret key...");
+    let sk = bfv::SecretKey::random(&params, &mut rng);
 
     // Determine query indices
     let query_indices: Vec<usize> = args.query_indices.unwrap_or_else(|| {
@@ -159,103 +143,168 @@ fn main() -> Result<()> {
         indices
     });
 
-    info!("Query indices: {:?}", query_indices);
+    println!("Query indices: {:?}", query_indices);
 
-    // Create output directories
+    // Create output directory
     let output_dir = &args.output_dir;
     fs::create_dir_all(output_dir)?;
-    fs::create_dir_all(output_dir.join("keys"))?;
-    fs::create_dir_all(output_dir.join("queries"))?;
-    fs::create_dir_all(output_dir.join("expected"))?;
 
-    // Save parameters
-    let params_json = ParamsJson {
-        poly_degree: degree,
-        plaintext_modulus,
-        moduli_bits: moduli_sizes.to_vec(),
-        num_tiles: args.num_tiles,
-        tile_size: args.tile_size,
-        elements_per_plaintext,
-        num_rows,
-        dim1,
-        dim2,
-        expansion_level,
-    };
-    let params_file = File::create(output_dir.join("params.json"))?;
-    serde_json::to_writer_pretty(params_file, &params_json)?;
-    info!("Saved params.json");
-
-    // Save raw tiles
-    let tiles_path = output_dir.join("tiles.bin");
-    let mut tiles_file = File::create(&tiles_path)?;
-    for tile in &tiles {
-        tiles_file.write_all(tile)?;
-    }
-    info!("Saved tiles.bin ({} bytes)", tiles.len() * args.tile_size);
-
-    // Save keys
-    let ek_bytes = ek.to_bytes();
-    fs::write(output_dir.join("keys/galois.bin"), &ek_bytes)?;
-    info!("Saved galois.bin ({} bytes)", ek_bytes.len());
-
-    let rk_bytes = rk.to_bytes();
-    fs::write(output_dir.join("keys/relin.bin"), &rk_bytes)?;
-    info!("Saved relin.bin ({} bytes)", rk_bytes.len());
-
-    // Save secret key (for testing only - would not be shared in production)
+    // --- Export secret_key.bin ---
+    // SecretKey.coeffs is pub(crate), so we serialize to protobuf and decode
+    // to extract raw i64 coefficients.
+    println!("Exporting secret key...");
     let sk_bytes = sk.to_bytes();
-    fs::write(output_dir.join("keys/secret.bin"), &sk_bytes)?;
-    info!("Saved secret.bin ({} bytes) [TEST ONLY]", sk_bytes.len());
+    let sk_proto = fhe::proto::bfv::SecretKey::decode(&sk_bytes[..])?;
+    let sk_coeffs: &[i64] = &sk_proto.coeffs;
+    println!(
+        "  Secret key: {} coefficients (expected {})",
+        sk_coeffs.len(),
+        degree
+    );
 
-    // Generate and save queries
+    // Display coefficient distribution (CBD sampling, centered around 0)
+    let (neg_count, zero_count, pos_count) = sk_coeffs.iter().fold((0usize, 0usize, 0usize), |(n, z, p), &c| {
+        match c {
+            -1 => (n + 1, z, p),
+            0 => (n, z + 1, p),
+            1 => (n, z, p + 1),
+            _ => {
+                // CBD distribution can produce values beyond -1,0,1
+                (n, z, p)
+            }
+        }
+    });
+    println!(
+        "  Coefficient distribution: -1:{}, 0:{}, +1:{}, other:{}",
+        neg_count,
+        zero_count,
+        pos_count,
+        sk_coeffs.len() - neg_count - zero_count - pos_count
+    );
+
+    // Write secret_key.bin: [num_coeffs: u64][coeff_0: i64]...[coeff_N-1: i64]
+    {
+        let sk_path = output_dir.join("secret_key.bin");
+        let mut f = File::create(&sk_path)?;
+        f.write_all(&(sk_coeffs.len() as u64).to_le_bytes())?;
+        for &coeff in sk_coeffs {
+            f.write_all(&coeff.to_le_bytes())?;
+        }
+        let file_size = (1 + sk_coeffs.len()) * 8;
+        println!("  Saved secret_key.bin ({} bytes)", file_size);
+    }
+
+    // --- Export tiles.bin ---
+    // Format: [num_tiles: u64][tile_size: u64][tile_0_bytes...][tile_1_bytes...]
+    println!("Exporting tiles...");
+    {
+        let tiles_path = output_dir.join("tiles.bin");
+        let mut f = File::create(&tiles_path)?;
+        f.write_all(&(args.num_tiles as u64).to_le_bytes())?;
+        f.write_all(&(args.tile_size as u64).to_le_bytes())?;
+        for tile in &tiles {
+            f.write_all(tile)?;
+        }
+        let file_size = 16 + tiles.len() * args.tile_size;
+        println!("  Saved tiles.bin ({} bytes)", file_size);
+    }
+
+    // --- Export params.json ---
+    // Write JSON manually to avoid serde/serde_json dependency.
+    println!("Exporting parameters...");
+    {
+        let q_primes_json: Vec<String> = q_primes.iter().map(|q| q.to_string()).collect();
+        let query_indices_json: Vec<String> =
+            query_indices.iter().map(|i| i.to_string()).collect();
+
+        let json = format!(
+            r#"{{
+  "poly_degree": {},
+  "plaintext_modulus": {},
+  "q_primes": [{}],
+  "num_tiles": {},
+  "tile_size": {},
+  "elements_per_plaintext": {},
+  "num_rows": {},
+  "dim1": {},
+  "dim2": {},
+  "expansion_level": {},
+  "query_indices": [{}]
+}}"#,
+            degree,
+            plaintext_modulus,
+            q_primes_json.join(", "),
+            args.num_tiles,
+            args.tile_size,
+            elements_per_plaintext,
+            num_rows,
+            dim1,
+            dim2,
+            expansion_level,
+            query_indices_json.join(", "),
+        );
+
+        let params_path = output_dir.join("params.json");
+        fs::write(&params_path, &json)?;
+        println!("  Saved params.json");
+    }
+
+    // --- Export expected_{idx}.bin ---
+    // Each file contains the raw tile bytes for verification after PIR retrieval.
+    // The C++ side decrypts the PIR response, extracts the correct tile from the
+    // packed plaintext row at the given offset, and compares against these bytes.
+    println!("Exporting expected results...");
     for &index in &query_indices {
         if index >= args.num_tiles {
-            warn!("Skipping index {} (out of range)", index);
+            println!("  WARNING: Skipping index {} (out of range)", index);
             continue;
         }
 
-        info!("Generating query for index {}...", index);
+        // The PIR server packs multiple tiles per plaintext row. The C++ side
+        // needs to know the offset within the decoded row to extract this tile.
+        let offset_in_row = index % elements_per_plaintext;
 
-        // Create the query
-        let query = create_pir_query(
+        // Format: [offset_in_row: u64][raw_tile_bytes...]
+        let expected_path = output_dir.join(format!("expected_{}.bin", index));
+        let mut f = File::create(&expected_path)?;
+        f.write_all(&(offset_in_row as u64).to_le_bytes())?;
+        f.write_all(&tiles[index])?;
+        println!(
+            "  Saved expected_{}.bin ({} bytes, offset_in_row={})",
             index,
-            args.tile_size,
-            &params,
-            &sk,
-            dim1,
-            dim2,
-            elements_per_plaintext,
-            &mut rng,
-        )?;
-
-        // Save query ciphertext
-        let query_bytes = query.to_bytes();
-        fs::write(
-            output_dir.join(format!("queries/query_{}.bin", index)),
-            &query_bytes,
-        )?;
-        info!("  Saved query_{}.bin ({} bytes)", index, query_bytes.len());
-
-        // Save expected plaintext (the raw tile bytes)
-        fs::write(
-            output_dir.join(format!("expected/plaintext_{}.bin", index)),
-            &tiles[index],
-        )?;
-        info!("  Saved plaintext_{}.bin", index);
+            8 + args.tile_size,
+            offset_in_row
+        );
     }
 
-    info!("");
-    info!("Test vectors generated successfully!");
-    info!("Output directory: {:?}", output_dir);
+    println!();
+    println!("Test vectors generated successfully!");
+    println!("Output directory: {:?}", output_dir);
+    println!();
+    println!("Files:");
+    println!("  params.json       - PIR dimensions, Q primes, query indices");
+    println!("  secret_key.bin    - Raw i64 coefficients for SK import");
+    println!("  tiles.bin         - Database tiles with header");
+    for &index in &query_indices {
+        if index < args.num_tiles {
+            println!(
+                "  expected_{}.bin  - Expected tile bytes for index {}",
+                index, index
+            );
+        }
+    }
 
     Ok(())
 }
 
 /// Generate synthetic tiles with deterministic random data.
-fn generate_synthetic_tiles<R: Rng>(
+///
+/// Each tile starts with a 4-byte little-endian index for easy identification,
+/// followed by random bytes.
+fn generate_synthetic_tiles(
     num_tiles: usize,
     tile_size: usize,
-    rng: &mut R,
+    rng: &mut impl RngCore,
 ) -> Vec<Vec<u8>> {
     (0..num_tiles)
         .map(|i| {
@@ -263,44 +312,8 @@ fn generate_synthetic_tiles<R: Rng>(
             // First 4 bytes: tile index (for easy identification)
             tile[..4].copy_from_slice(&(i as u32).to_le_bytes());
             // Rest: random data
-            rng.fill(&mut tile[4..]);
+            rng.fill_bytes(&mut tile[4..]);
             tile
         })
         .collect()
-}
-
-/// Create a PIR query ciphertext for a specific index.
-fn create_pir_query<R: Rng>(
-    index: usize,
-    element_size: usize,
-    params: &Arc<BfvParameters>,
-    sk: &SecretKey,
-    dim1: usize,
-    dim2: usize,
-    elements_per_plaintext: usize,
-    rng: &mut R,
-) -> Result<Ciphertext> {
-    let plaintext_modulus = params.plaintext();
-    let level = (dim1 + dim2).next_power_of_two().ilog2();
-
-    // Compute which row this index maps to in the packed database
-    let query_index = index / elements_per_plaintext;
-
-    // Create selection vector
-    let mut pt = vec![0u64; dim1 + dim2];
-    let inv = inverse(1 << level, plaintext_modulus)
-        .ok_or_else(|| anyhow::anyhow!("Failed to compute inverse"))?;
-
-    // Set selection bits
-    pt[query_index / dim2] = inv;        // Row selection (dim1)
-    pt[dim1 + (query_index % dim2)] = inv; // Column selection (dim2)
-
-    // Encode and encrypt
-    let query_pt = Plaintext::try_encode(&pt, bfv::Encoding::poly_at_level(1), params)
-        .context("Failed to encode query plaintext")?;
-
-    let query: Ciphertext = sk.try_encrypt(&query_pt, rng)
-        .context("Failed to encrypt query")?;
-
-    Ok(query)
 }
