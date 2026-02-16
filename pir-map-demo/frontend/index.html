@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PIR Map Demo — Private Information Retrieval</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Loading screen -->
+    <div id="loading-screen">
+        <div class="loading-card">
+            <div class="loading-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+            </div>
+            <h1>Private Information Retrieval</h1>
+            <p class="loading-subtitle">Map tiles fetched via homomorphic encryption</p>
+            <div class="loading-spinner"></div>
+            <p id="loading-status">Initializing WASM module...</p>
+            <div class="loading-progress">
+                <div id="loading-bar" class="loading-bar"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Map container -->
+    <div id="map"></div>
+
+    <!-- PIR info badge (top-right) -->
+    <div id="pir-badge" class="overlay-panel" style="display:none;">
+        <div class="badge-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+        </div>
+        <div class="badge-text">
+            <strong>PIR Active</strong>
+            <span id="pir-stats">0 queries</span>
+        </div>
+    </div>
+
+    <!-- GPU metrics widget (bottom-right) -->
+    <div id="gpu-metrics" class="overlay-panel" style="display:none;">
+        <div class="metrics-header">GPU Metrics</div>
+        <div class="metrics-row">
+            <span class="metrics-label">Utilization</span>
+            <span id="gpu-util" class="metrics-value">—</span>
+        </div>
+        <div class="metrics-row">
+            <span class="metrics-label">Memory</span>
+            <span id="gpu-mem" class="metrics-value">—</span>
+        </div>
+        <div class="metrics-row">
+            <span class="metrics-label">Temperature</span>
+            <span id="gpu-temp" class="metrics-value">—</span>
+        </div>
+        <div class="metrics-row">
+            <span class="metrics-label">Last Query</span>
+            <span id="query-time" class="metrics-value">—</span>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>
