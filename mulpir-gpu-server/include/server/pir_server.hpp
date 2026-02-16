@@ -1,10 +1,15 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <queue>
 #include <string>
+#include <thread>
 
 #include "config.hpp"
 #include "types.hpp"
@@ -40,6 +45,10 @@ public:
 
         /// Maximum concurrent queries.
         size_t max_concurrent_queries = 4;
+
+        /// Byte offset into the database file where tile data begins.
+        /// Use 16 to skip a tiles.bin header (8-byte num_tiles + 8-byte tile_size).
+        size_t data_offset = 0;
 
         /// Enable verbose logging.
         bool verbose = false;
@@ -99,10 +108,13 @@ public:
     const PIRStats& last_stats() const;
 
 private:
-    /// Accept incoming connections.
+    /// Accept incoming connections and enqueue work.
     void accept_loop();
 
-    /// Handle a single client connection.
+    /// Processing thread: dequeue and process requests on GPU.
+    void processing_loop();
+
+    /// Handle a single client connection: read message and enqueue.
     ///
     /// @param client_fd Client socket file descriptor.
     void handle_connection(int client_fd);
@@ -143,6 +155,18 @@ private:
     std::atomic<bool> running_{false};
     int server_fd_ = -1;
     PIRStats last_stats_;
+
+    // Work queue for pipelined I/O + GPU processing
+    struct PendingRequest {
+        int client_fd;
+        serialization::WireFormat::MessageType msg_type;
+        std::vector<uint8_t> payload;
+    };
+
+    std::queue<PendingRequest> work_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::thread processing_thread_;
 };
 
 }  // namespace mulpir::server

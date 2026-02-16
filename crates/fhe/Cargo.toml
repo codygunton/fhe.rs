@@ -78,3 +78,6 @@ name = "voting"
 
 [[example]]
 name = "generate_test_vectors"
+
+[[example]]
+name = "pir_e2e_test"

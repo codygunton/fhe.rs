@@ -133,7 +133,8 @@ void DatabaseManager::load_database(const uint8_t* data, size_t num_tiles, size_
 void DatabaseManager::load_database_mmap(
     const std::string& path,
     size_t num_tiles,
-    size_t tile_size
+    size_t tile_size,
+    size_t data_offset
 ) {
 #ifdef __linux__
     // Open file
@@ -150,14 +151,14 @@ void DatabaseManager::load_database_mmap(
         throw std::runtime_error("Failed to stat database file");
     }
 
-    const size_t expected_size = num_tiles * tile_size;
+    const size_t expected_size = data_offset + num_tiles * tile_size;
     if (static_cast<size_t>(sb.st_size) < expected_size) {
         close(impl_->mmap_fd);
         impl_->mmap_fd = -1;
         throw std::runtime_error("Database file too small");
     }
 
-    // Memory map the file
+    // Memory map the file (including the header so offset arithmetic works)
     impl_->mmap_size = expected_size;
     impl_->mmap_ptr = mmap(nullptr, impl_->mmap_size, PROT_READ, MAP_PRIVATE,
                            impl_->mmap_fd, 0);
@@ -169,13 +170,19 @@ void DatabaseManager::load_database_mmap(
         throw std::runtime_error("Failed to memory-map database file");
     }
 
-    // Load from mapped memory
-    load_database(static_cast<const uint8_t*>(impl_->mmap_ptr), num_tiles, tile_size);
+    // Load from mapped memory, skipping the header
+    const auto* base = static_cast<const uint8_t*>(impl_->mmap_ptr);
+    load_database(base + data_offset, num_tiles, tile_size);
 #else
     // Fallback: read entire file into memory
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         throw std::runtime_error("Failed to open database file: " + path);
+    }
+
+    // Skip header
+    if (data_offset > 0) {
+        file.seekg(static_cast<std::streamoff>(data_offset));
     }
 
     std::vector<uint8_t> data(num_tiles * tile_size);

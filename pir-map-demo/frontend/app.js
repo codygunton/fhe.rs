@@ -130,6 +130,58 @@ async function fetchSlot(slotIdx, abortSignal) {
     return client.decrypt_response(encrypted, slotIdx);
 }
 
+// ─── Batch PIR slot fetching (single HTTP request for multi-slot tiles) ──
+async function fetchSlotsViaBatch(slots, abortSignal) {
+    // Encrypt all queries
+    const queryParts = slots.map(idx => client.create_query(idx));
+
+    // Pack into batch format: [num_queries: u32] [size: u32] [query_bytes]...
+    let totalSize = 4; // num_queries header
+    for (const q of queryParts) {
+        totalSize += 4 + q.length; // size prefix + data
+    }
+
+    const batchPayload = new Uint8Array(totalSize);
+    const view = new DataView(batchPayload.buffer);
+    view.setUint32(0, slots.length, true); // little-endian
+    let offset = 4;
+    for (const q of queryParts) {
+        view.setUint32(offset, q.length, true);
+        offset += 4;
+        batchPayload.set(q, offset);
+        offset += q.length;
+    }
+
+    // Single POST request
+    const resp = await fetch('/api/batch-query', {
+        method: 'POST',
+        body: batchPayload,
+        headers: { 'Content-Type': 'application/octet-stream' },
+        signal: abortSignal,
+    });
+    if (!resp.ok) throw new Error(`Batch query failed: ${resp.status}`);
+
+    // Parse batch response: [num_responses: u32] [size: u32] [data]...
+    const respBuf = new Uint8Array(await resp.arrayBuffer());
+    const respView = new DataView(respBuf.buffer);
+    const numResponses = respView.getUint32(0, true);
+    if (numResponses !== slots.length) {
+        throw new Error(`Expected ${slots.length} responses, got ${numResponses}`);
+    }
+
+    const decryptedParts = [];
+    let rOffset = 4;
+    for (let i = 0; i < numResponses; i++) {
+        const respSize = respView.getUint32(rOffset, true);
+        rOffset += 4;
+        const encrypted = respBuf.subarray(rOffset, rOffset + respSize);
+        rOffset += respSize;
+        decryptedParts.push(client.decrypt_response(encrypted, slots[i]));
+    }
+
+    return decryptedParts;
+}
+
 // ─── PIR tile fetching (supports multi-slot tiles) ───────────────────
 async function fetchTileViaPIR(z, x, y, abortSignal) {
     const key = `${z}/${x}/${y}`;
@@ -146,10 +198,10 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
     const t0 = performance.now();
 
     try {
-        // Fetch all slots in parallel (Flask proxy is threaded)
-        const decryptedParts = await Promise.all(
-            slots.map(slotIdx => fetchSlot(slotIdx, abortSignal))
-        );
+        // Use batch endpoint for multi-slot tiles, single fetch for 1 slot
+        const decryptedParts = slots.length > 1
+            ? await fetchSlotsViaBatch(slots, abortSignal)
+            : [await fetchSlot(slots[0], abortSignal)];
 
         // Concatenate all decrypted slot data into one buffer
         const totalLen = decryptedParts.reduce((s, part) => s + part.length, 0);
@@ -216,13 +268,13 @@ function initMap(mappingData) {
         return { data };
     });
 
-    const center = mappingData.center || [-98.5, 39.8];
+    const center = mappingData.center || [-73.9857, 40.7484];
     const maxZoom = mappingData.max_zoom || 11;
 
     const map = new maplibregl.Map({
         container: 'map',
         center: center,
-        zoom: 4,
+        zoom: 14,
         minZoom: 0,
         maxZoom: 16,
         style: {

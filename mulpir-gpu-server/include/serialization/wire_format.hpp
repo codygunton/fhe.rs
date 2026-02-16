@@ -24,6 +24,7 @@ public:
         SET_RELIN_KEY = 0x02,
         QUERY = 0x03,
         RESPONSE = 0x04,
+        BATCH_QUERY = 0x05,
         ERROR = 0xFF,
     };
 
@@ -75,6 +76,23 @@ public:
     /// @param bytes Serialized key data.
     /// @return Deserialized relinearization key.
     RelinKey deserialize_relin_key(std::span<const uint8_t> bytes);
+
+    /// Deserialize a batch of PIR queries from bytes.
+    ///
+    /// Wire format: [num_queries: u32 LE] [query_size: u32 LE] [query_bytes]...
+    ///
+    /// @param bytes Serialized batch query data.
+    /// @return Vector of deserialized PIR queries.
+    /// @throws std::runtime_error if deserialization fails.
+    std::vector<PIRQuery> deserialize_batch_query(std::span<const uint8_t> bytes);
+
+    /// Serialize a batch of PIR responses to bytes.
+    ///
+    /// Wire format: [num_responses: u32 LE] [response_size: u32 LE] [response_bytes]...
+    ///
+    /// @param responses Vector of PIR responses.
+    /// @return Serialized batch response data.
+    std::vector<uint8_t> serialize_batch_response(const std::vector<PIRResponse>& responses);
 
     /// Serialize a PIR query (for testing purposes).
     ///

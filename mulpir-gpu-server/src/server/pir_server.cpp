@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace mulpir::server {
@@ -47,7 +49,8 @@ void PIRServer::initialize() {
         db_->load_database_mmap(
             config_.database_path,
             config_.num_tiles,
-            config_.tile_size_bytes
+            config_.tile_size_bytes,
+            config_.data_offset
         );
         std::cout << "  Loaded " << db_->num_tiles() << " tiles" << std::endl;
         std::cout << "  GPU memory: " << (db_->gpu_memory_used() / 1024 / 1024) << " MB" << std::endl;
@@ -144,13 +147,25 @@ void PIRServer::run() {
 void PIRServer::shutdown() {
     running_ = false;
 
+    // Wake up processing thread
+    queue_cv_.notify_all();
+
+    // Close server socket to unblock accept()
     if (server_fd_ >= 0) {
         close(server_fd_);
         server_fd_ = -1;
     }
+
+    // Wait for processing thread
+    if (processing_thread_.joinable()) {
+        processing_thread_.join();
+    }
 }
 
 void PIRServer::accept_loop() {
+    // Start the GPU processing thread
+    processing_thread_ = std::thread([this]() { processing_loop(); });
+
     while (running_) {
         sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
@@ -175,7 +190,29 @@ void PIRServer::accept_loop() {
         }
 
         handle_connection(client_fd);
-        close(client_fd);
+    }
+}
+
+void PIRServer::processing_loop() {
+    while (running_) {
+        PendingRequest req;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this]() {
+                return !work_queue_.empty() || !running_;
+            });
+
+            if (!running_ && work_queue_.empty()) {
+                break;
+            }
+
+            req = std::move(work_queue_.front());
+            work_queue_.pop();
+        }
+
+        // Process the message on GPU thread
+        process_message(req.client_fd, req.msg_type, req.payload);
+        close(req.client_fd);
     }
 }
 
@@ -184,6 +221,7 @@ void PIRServer::handle_connection(int client_fd) {
     uint8_t header[8];
     ssize_t n = recv(client_fd, header, 8, MSG_WAITALL);
     if (n != 8) {
+        close(client_fd);
         return;
     }
 
@@ -192,6 +230,7 @@ void PIRServer::handle_connection(int client_fd) {
     uint32_t payload_length;
     if (!serialization::WireFormat::parse_header({header, 8}, msg_type, payload_length)) {
         send_response(client_fd, serialization::WireFormat::Status::ERROR_INVALID_MESSAGE, {});
+        close(client_fd);
         return;
     }
 
@@ -200,12 +239,17 @@ void PIRServer::handle_connection(int client_fd) {
     if (payload_length > 0) {
         n = recv(client_fd, payload.data(), payload_length, MSG_WAITALL);
         if (n != static_cast<ssize_t>(payload_length)) {
+            close(client_fd);
             return;
         }
     }
 
-    // Process message
-    process_message(client_fd, msg_type, payload);
+    // Enqueue for processing thread (GPU operations must be serialized)
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        work_queue_.push({client_fd, msg_type, std::move(payload)});
+    }
+    queue_cv_.notify_one();
 }
 
 void PIRServer::process_message(
@@ -255,6 +299,30 @@ void PIRServer::process_message(
 
                 // Serialize and send response
                 auto response_bytes = wire_->serialize_response(response);
+                send_response(client_fd, Status::OK, response_bytes);
+                break;
+            }
+
+            case MsgType::BATCH_QUERY: {
+                if (!is_ready()) {
+                    send_response(client_fd, Status::ERROR_NOT_READY, {});
+                    return;
+                }
+
+                // Deserialize batch of queries
+                auto queries = wire_->deserialize_batch_query(payload);
+                std::cout << "Processing batch of " << queries.size() << " queries" << std::endl;
+
+                // Process each query sequentially on GPU
+                std::vector<PIRResponse> responses;
+                responses.reserve(queries.size());
+                for (auto& q : queries) {
+                    responses.push_back(engine_->process_query(q));
+                }
+                last_stats_ = engine_->last_query_stats();
+
+                // Serialize and send batch response
+                auto response_bytes = wire_->serialize_batch_response(responses);
                 send_response(client_fd, Status::OK, response_bytes);
                 break;
             }

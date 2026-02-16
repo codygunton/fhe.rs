@@ -22,6 +22,7 @@ void print_usage(const char* program) {
               << "  --database <path>   Path to database file (required)\n"
               << "  --num-tiles <n>     Number of tiles in database (required)\n"
               << "  --tile-size <n>     Size of each tile in bytes (default: 30720)\n"
+              << "  --data-offset <n>   Byte offset to tile data in file (default: 0, use 16 to skip tiles.bin header)\n"
               << "  --port <n>          Server port (default: 8080)\n"
               << "  --verbose           Enable verbose output\n"
               << "  --help              Show this help message\n"
@@ -46,6 +47,8 @@ int main(int argc, char** argv) {
             config.num_tiles = std::stoul(argv[++i]);
         } else if (arg == "--tile-size" && i + 1 < argc) {
             config.tile_size_bytes = std::stoul(argv[++i]);
+        } else if (arg == "--data-offset" && i + 1 < argc) {
+            config.data_offset = std::stoul(argv[++i]);
         } else if (arg == "--port" && i + 1 < argc) {
             config.port = static_cast<uint16_t>(std::stoul(argv[++i]));
         } else if (arg == "--verbose" || arg == "-v") {

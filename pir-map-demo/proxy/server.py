@@ -20,6 +20,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 MSG_SET_GALOIS_KEY = 0x01
 MSG_SET_RELIN_KEY = 0x02
 MSG_QUERY = 0x03
+MSG_BATCH_QUERY = 0x05
 
 # Wire protocol response status codes
 STATUS_OK = 0x00
@@ -188,6 +189,30 @@ def create_app(gpu_host: str, gpu_port: int, tiles_dir: str) -> Flask:
             return Response(resp, content_type="application/octet-stream")
         msg = STATUS_NAMES.get(status, f"unknown_error_{status:#x}")
         logger.warning("GPU returned error for query: %s", msg)
+        return jsonify({"status": "error", "message": msg}), 400
+
+    # ------------------------------------------------------------------ #
+    # Batch query endpoint — forwards multiple queries in one TCP message
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/batch-query", methods=["POST"])
+    def batch_query():
+        payload = request.get_data()
+        logger.info(
+            "Sending batch query (%d bytes) to GPU server", len(payload)
+        )
+        try:
+            status, resp = send_to_gpu(
+                gpu_host, gpu_port, MSG_BATCH_QUERY, payload
+            )
+        except Exception as exc:
+            logger.error("GPU connection failed: %s", exc)
+            return jsonify({"status": "error", "message": str(exc)}), 502
+
+        if status == STATUS_OK:
+            return Response(resp, content_type="application/octet-stream")
+        msg = STATUS_NAMES.get(status, f"unknown_error_{status:#x}")
+        logger.warning("GPU returned error for batch query: %s", msg)
         return jsonify({"status": "error", "message": msg}), 400
 
     # ------------------------------------------------------------------ #

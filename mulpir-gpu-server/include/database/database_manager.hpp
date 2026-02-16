@@ -61,7 +61,9 @@ public:
     /// @param path Path to the binary file containing tile data.
     /// @param num_tiles Number of tiles in the file.
     /// @param tile_size Size of each tile in bytes.
-    void load_database_mmap(const std::string& path, size_t num_tiles, size_t tile_size);
+    /// @param data_offset Byte offset into the file where tile data begins (e.g. 16 to skip a header).
+    void load_database_mmap(const std::string& path, size_t num_tiles, size_t tile_size,
+                            size_t data_offset = 0);
 
     /// Check if the database is loaded and ready for queries.
     bool is_ready() const;
