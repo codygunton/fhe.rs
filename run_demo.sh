@@ -70,11 +70,28 @@ kill_port "$PROXY_PORT"
 
 # Track background PIDs for cleanup
 PIDS=()
+CLEANED_UP=false
 cleanup() {
+    if $CLEANED_UP; then return; fi
+    CLEANED_UP=true
     echo ""
     echo "Shutting down..."
+    # Send SIGTERM first
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
+    done
+    # Give processes 3 seconds to exit gracefully
+    for i in $(seq 1 6); do
+        alive=false
+        for pid in "${PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then alive=true; break; fi
+        done
+        if ! $alive; then break; fi
+        sleep 0.5
+    done
+    # Force-kill anything still alive (releases GPU memory)
+    for pid in "${PIDS[@]}"; do
+        kill -9 "$pid" 2>/dev/null || true
     done
     wait 2>/dev/null || true
     echo "Done."

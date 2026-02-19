@@ -142,21 +142,29 @@ void PIRServer::run() {
     std::cout << "Server listening on port " << config_.port << std::endl;
 
     accept_loop();
+
+    // accept_loop returned (signal received) — join processing thread
+    shutdown();
 }
 
-void PIRServer::shutdown() {
+void PIRServer::request_shutdown() {
+    // Signal-safe: only set flag and close socket to unblock accept().
     running_ = false;
-
-    // Wake up processing thread
-    queue_cv_.notify_all();
 
     // Close server socket to unblock accept()
     if (server_fd_ >= 0) {
-        close(server_fd_);
+        ::close(server_fd_);
         server_fd_ = -1;
     }
+}
 
-    // Wait for processing thread
+void PIRServer::shutdown() {
+    request_shutdown();
+
+    // Wake up processing thread (needs mutex, not signal-safe)
+    queue_cv_.notify_all();
+
+    // Wait for processing thread to finish
     if (processing_thread_.joinable()) {
         processing_thread_.join();
     }

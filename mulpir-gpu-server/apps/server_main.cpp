@@ -9,9 +9,11 @@
 static mulpir::server::PIRServer* g_server = nullptr;
 
 void signal_handler(int signum) {
-    std::cout << "\nReceived signal " << signum << ", shutting down..." << std::endl;
+    // Signal handlers must not block — just set the flag and unblock accept().
+    // shutdown() with join() is called from main() after run() returns.
+    (void)signum;
     if (g_server) {
-        g_server->shutdown();
+        g_server->request_shutdown();
     }
 }
 

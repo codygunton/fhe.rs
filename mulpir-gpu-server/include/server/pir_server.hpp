@@ -89,7 +89,14 @@ public:
     /// Listens for connections and processes queries until shutdown.
     void run();
 
-    /// Shutdown the server.
+    /// Request shutdown (signal-safe, non-blocking).
+    /// Sets the running flag to false and closes the server socket
+    /// to unblock accept(). Safe to call from a signal handler.
+    void request_shutdown();
+
+    /// Shutdown the server (blocking).
+    /// Waits for the processing thread to finish. Must NOT be called
+    /// from a signal handler.
     void shutdown();
 
     /// Process a single query (for testing/embedding).
