@@ -126,10 +126,18 @@ if $USE_SYNTHETIC; then
 else
     TILES_BIN="$TILES_DIR/tiles.bin"
     if [[ ! -f "$TILES_BIN" ]]; then
-        echo "ERROR: $TILES_BIN not found."
-        echo "  Run: python3 $ROOT/../mulpir-gpu/demo/tiles/prepare_tiles.py --input <mbtiles> --output $TILES_DIR"
-        echo "  Or use: $0 --synthetic"
-        exit 1
+        # Fall back to shared tile data from mulpir-gpu demo
+        GPU_TILES_DIR="$ROOT/../mulpir-gpu/demo/tiles"
+        if [[ -f "$GPU_TILES_DIR/tiles.bin" ]]; then
+            echo "==> Using tiles from mulpir-gpu demo ($GPU_TILES_DIR)"
+            TILES_DIR="$GPU_TILES_DIR"
+            TILES_BIN="$TILES_DIR/tiles.bin"
+        else
+            echo "ERROR: $TILES_BIN not found."
+            echo "  Run: python3 $ROOT/../mulpir-gpu/demo/tiles/prepare_tiles.py --input <mbtiles> --output $TILES_DIR"
+            echo "  Or use: $0 --synthetic"
+            exit 1
+        fi
     fi
     NUM_TILES=$(python3 -c "import json; m=json.load(open('$TILES_DIR/tile_mapping.json')); print(m.get('num_pir_slots', m['num_tiles']))")
     TILE_SIZE=$(python3 -c "import json; print(json.load(open('$TILES_DIR/tile_mapping.json'))['tile_size'])")
