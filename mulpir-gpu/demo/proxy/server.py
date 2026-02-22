@@ -8,11 +8,14 @@ for the MulPIR GPU server, and serves static frontend files.
 import argparse
 import json
 import logging
-import math
 import os
 import socket
 import struct
 import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'pir-map-shared', 'proxy'))
+from common import compute_pir_params, load_tile_mapping, get_num_pir_slots
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -85,39 +88,7 @@ def send_to_gpu(
         sock.close()
 
 
-def next_power_of_two(n: int) -> int:
-    """Return the smallest power of two >= n."""
-    if n <= 1:
-        return 1
-    return 1 << (n - 1).bit_length()
-
-
-def compute_pir_params(num_tiles: int, tile_size: int) -> dict:
-    """
-    Compute PIR dimension parameters from the tile database size.
-
-    Returns a dict with dim1, dim2, expansion_level, and intermediate values.
-    """
-    elements_per_plaintext = (BYTES_PER_PLAINTEXT * 8) // (tile_size * 8)
-    num_rows = math.ceil(num_tiles / elements_per_plaintext)
-    dim1 = math.ceil(math.sqrt(num_rows))
-    dim2 = math.ceil(num_rows / dim1)
-    expansion_level = math.ceil(
-        math.log2(next_power_of_two(dim1 + dim2))
-    )
-
-    return {
-        "poly_degree": POLY_DEGREE,
-        "bits_per_coeff": BITS_PER_COEFF,
-        "bytes_per_plaintext": BYTES_PER_PLAINTEXT,
-        "elements_per_plaintext": elements_per_plaintext,
-        "num_tiles": num_tiles,
-        "tile_size": tile_size,
-        "num_rows": num_rows,
-        "dim1": dim1,
-        "dim2": dim2,
-        "expansion_level": expansion_level,
-    }
+SHARED_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'pir-map-shared', 'frontend'))
 
 
 def create_app(gpu_host: str, gpu_port: int, tiles_dir: str) -> Flask:
@@ -256,10 +227,8 @@ def create_app(gpu_host: str, gpu_port: int, tiles_dir: str) -> Flask:
 
     @app.route("/api/params", methods=["GET"])
     def params():
-        mapping_path = os.path.join(tiles_dir, "tile_mapping.json")
         try:
-            with open(mapping_path, "r") as f:
-                mapping = json.load(f)
+            mapping = load_tile_mapping(tiles_dir)
         except FileNotFoundError:
             return jsonify({"error": "tile_mapping.json not found"}), 404
         except json.JSONDecodeError as exc:
@@ -273,17 +242,7 @@ def create_app(gpu_host: str, gpu_port: int, tiles_dir: str) -> Flask:
                 500,
             )
 
-        # Use total PIR slot count for dimension calculation.
-        # Split tiles occupy multiple slots, so num_pir_slots >= num_tiles.
-        num_pir_slots = mapping.get("num_pir_slots")
-        if num_pir_slots is None:
-            # Backwards compat: count slots from tile entries
-            num_pir_slots = 0
-            for value in mapping.get("tiles", {}).values():
-                if isinstance(value, list):
-                    num_pir_slots += len(value)
-                else:
-                    num_pir_slots += 1
+        num_pir_slots = get_num_pir_slots(mapping)
 
         return jsonify(compute_pir_params(num_pir_slots, tile_size))
 
@@ -302,6 +261,14 @@ def create_app(gpu_host: str, gpu_port: int, tiles_dir: str) -> Flask:
             return jsonify({"error": "tile_mapping.json not found"}), 404
         except json.JSONDecodeError as exc:
             return jsonify({"error": f"Invalid JSON: {exc}"}), 500
+
+    # ------------------------------------------------------------------ #
+    # Shared frontend modules
+    # ------------------------------------------------------------------ #
+
+    @app.route("/shared/<path:filename>")
+    def shared_files(filename):
+        return send_from_directory(SHARED_DIR, filename)
 
     # ------------------------------------------------------------------ #
     # Static file serving (frontend)

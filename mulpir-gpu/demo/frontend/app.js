@@ -1,155 +1,65 @@
 import init, { PIRClient } from './pkg/fhe_wasm.js';
+import { LRUTileCache } from '/shared/tile-cache.js';
+import { TileBatchDispatcher } from '/shared/tile-batch.js';
+import { decodeMultiSlotToPBF } from '/shared/tile-decoder.js';
+import { initMap } from '/shared/map-setup.js';
 
-// ─── LRU tile cache ───────────────────────────────────────────────────
-class LRUTileCache {
-    constructor(maxBytes = 500 * 1024 * 1024) {
-        this._cache = new Map();   // key → {data: ArrayBuffer, size: number}
-        this._totalSize = 0;
-        this._maxSize = maxBytes;
-    }
-    has(key) { return this._cache.has(key); }
-    get(key) {
-        if (!this._cache.has(key)) return null;
-        // Promote to MRU
-        const entry = this._cache.get(key);
-        this._cache.delete(key);
-        this._cache.set(key, entry);
-        return entry.data;
-    }
-    set(key, data) {
-        const size = data.byteLength;
-        if (size === 0) return;
-        // Evict LRU entries until there's room
-        const iter = this._cache.entries();
-        while (this._totalSize + size > this._maxSize && this._cache.size > 0) {
-            const { value: [oldKey, oldEntry] } = iter.next();
-            this._cache.delete(oldKey);
-            this._totalSize -= oldEntry.size;
-        }
-        if (this._cache.has(key)) {
-            this._totalSize -= this._cache.get(key).size;
-            this._cache.delete(key);
-        }
-        this._cache.set(key, { data, size });
-        this._totalSize += size;
-    }
-    get size() { return this._cache.size; }
-    get bytes() { return this._totalSize; }
-}
+// ─── State ────────────────────────────────────────────────────────────
+let client = null;
+let tileMapping = null;   // Map<string, number|number[]>  "z/x/y" → pirIndex or [indices]
+let pirParams = null;
+let queryCount = 0;
+let totalLatencyMs = 0;
+let lastQueryMs = 0;
+const tileCache = new LRUTileCache(500 * 1024 * 1024); // 500 MB
 
-// ─── Batch dispatcher — coalesces tile requests within a time window ──
-class TileBatchDispatcher {
-    constructor(coalesceMs = 50) {
-        this._pending = new Map();  // key → {slots, resolvers: [], reject}
-        this._timer = null;
-        this._coalesceMs = coalesceMs;
-    }
-
-    // Enqueue a tile request. Returns a Promise<ArrayBuffer> (PBF or empty).
-    // Multiple calls for the same key within the coalesce window all receive
-    // the same result (e.g. a prefetch and a MapLibre request for the same tile).
-    enqueue(z, x, y, slots, abortSignal) {
-        const key = `${z}/${x}/${y}`;
-        return new Promise((resolve, reject) => {
-            if (this._pending.has(key)) {
-                // Piggyback: both this resolver and the original get the real data
-                const entry = this._pending.get(key);
-                entry.resolvers.push(resolve);
-                if (abortSignal) {
-                    abortSignal.addEventListener('abort', () => {
-                        const e = this._pending.get(key);
-                        if (e) {
-                            const idx = e.resolvers.indexOf(resolve);
-                            if (idx >= 0) e.resolvers.splice(idx, 1);
-                        }
-                        resolve(new ArrayBuffer(0));
-                    }, { once: true });
-                }
-                return;
-            }
-            this._pending.set(key, { slots, resolvers: [resolve], reject });
-            // Remove from queue if MapLibre cancels before flush
-            if (abortSignal) {
-                abortSignal.addEventListener('abort', () => {
-                    const entry = this._pending.get(key);
-                    if (entry) {
-                        const idx = entry.resolvers.indexOf(resolve);
-                        if (idx >= 0) entry.resolvers.splice(idx, 1);
-                        // Only remove from pending if no resolvers remain
-                        if (entry.resolvers.length === 0) {
-                            this._pending.delete(key);
-                        }
-                    }
-                    resolve(new ArrayBuffer(0));
-                }, { once: true });
-            }
-            if (!this._timer) {
-                this._timer = setTimeout(() => this._flush(), this._coalesceMs);
-            }
-        });
-    }
-
-    async _flush() {
-        this._timer = null;
-        if (this._pending.size === 0) return;
-
-        const batch = [...this._pending.entries()];
-        this._pending.clear();
-
-        // Build flat slot list + per-tile bookkeeping
-        const tiles = [];
+// ─── MulPIR backend ───────────────────────────────────────────────────
+const mulpirBackend = {
+    processBatch: async (tiles, abortSignal) => {
+        // tiles: [{key, z, x, y, slots}]
+        // Build flat slot list across all tiles
         const allSlots = [];
-        for (const [key, { slots, resolvers, reject }] of batch) {
-            tiles.push({ key, startIdx: allSlots.length, count: slots.length, resolvers, reject, slots });
-            for (const s of slots) allSlots.push(s);
+        for (const tile of tiles) {
+            tile.startIdx = allSlots.length;
+            for (const s of tile.slots) allSlots.push(s);
         }
 
         console.log(`Dispatcher flush: ${tiles.length} tile(s), ${allSlots.length} slot(s)`);
 
-        let respBuf;
-        try {
-            // Encrypt queries, yielding every 5 to keep the page responsive
-            const queryParts = [];
-            for (let i = 0; i < allSlots.length; i++) {
-                queryParts.push(client.create_query(allSlots[i]));
-                if ((i + 1) % 5 === 0) await new Promise(r => setTimeout(r, 0));
-            }
-
-            // Pack batch payload: [u32 num_queries][u32 size][bytes]...
-            let totalSize = 4;
-            for (const q of queryParts) totalSize += 4 + q.length;
-            const payload = new Uint8Array(totalSize);
-            const view = new DataView(payload.buffer);
-            view.setUint32(0, allSlots.length, true);
-            let off = 4;
-            for (const q of queryParts) {
-                view.setUint32(off, q.length, true); off += 4;
-                payload.set(q, off); off += q.length;
-            }
-
-            const resp = await fetch('/api/batch-query', {
-                method: 'POST',
-                body: payload,
-                headers: { 'Content-Type': 'application/octet-stream' },
-            });
-            if (!resp.ok) throw new Error(`Batch query failed: ${resp.status}`);
-            respBuf = new Uint8Array(await resp.arrayBuffer());
-        } catch (err) {
-            for (const { resolvers, reject } of tiles) {
-                reject(err);  // only the first resolver's rejection is observed
-                for (const r of resolvers.slice(1)) r(new ArrayBuffer(0));
-            }
-            return;
+        // Encrypt queries, yielding every 5 to keep the page responsive
+        const queryParts = [];
+        for (let i = 0; i < allSlots.length; i++) {
+            queryParts.push(client.create_query(allSlots[i]));
+            if ((i + 1) % 5 === 0) await new Promise(r => setTimeout(r, 0));
         }
+
+        // Pack batch payload: [u32 num_queries][u32 size][bytes]...
+        let totalSize = 4;
+        for (const q of queryParts) totalSize += 4 + q.length;
+        const payload = new Uint8Array(totalSize);
+        const view = new DataView(payload.buffer);
+        view.setUint32(0, allSlots.length, true);
+        let off = 4;
+        for (const q of queryParts) {
+            view.setUint32(off, q.length, true); off += 4;
+            payload.set(q, off); off += q.length;
+        }
+
+        const resp = await fetch('/api/batch-query', {
+            method: 'POST',
+            body: payload,
+            headers: { 'Content-Type': 'application/octet-stream' },
+        });
+        if (!resp.ok) throw new Error(`Batch query failed: ${resp.status}`);
+        const respBuf = new Uint8Array(await resp.arrayBuffer());
 
         // Parse response: [u32 num_responses][u32 size][bytes]...
         const rv = new DataView(respBuf.buffer);
         const numResponses = rv.getUint32(0, true);
         if (numResponses !== allSlots.length) {
             const err = new Error(`Batch response count mismatch: got ${numResponses}, expected ${allSlots.length}`);
-            for (const { resolvers } of tiles) for (const r of resolvers) r(new ArrayBuffer(0));
             console.error(err.message);
-            return;
+            throw err;
         }
 
         // Read all raw ciphertext blobs
@@ -160,45 +70,24 @@ class TileBatchDispatcher {
             encryptedResponses.push(respBuf.subarray(roff, roff + sz)); roff += sz;
         }
 
-        // Decrypt and distribute tile by tile, yielding after each tile so
-        // MapLibre can render progressive results rather than one big-bang update.
-        for (const { startIdx, count, slots, resolvers } of tiles) {
+        // Decrypt per tile, build result map
+        const results = new Map();
+        for (const tile of tiles) {
             let result;
             try {
                 const parts = [];
-                for (let i = 0; i < count; i++) {
-                    parts.push(client.decrypt_response(encryptedResponses[startIdx + i], slots[i]));
+                for (let i = 0; i < tile.slots.length; i++) {
+                    parts.push(client.decrypt_response(encryptedResponses[tile.startIdx + i], tile.slots[i]));
                 }
-                // Concatenate decrypted parts
-                const totalLen = parts.reduce((s, p) => s + p.length, 0);
-                const combined = new Uint8Array(totalLen);
-                let coff = 0;
-                for (const p of parts) { combined.set(new Uint8Array(p), coff); coff += p.length; }
-                // Extract length-prefixed gzip, inflate to PBF
-                const trimmed = extractTileData(combined);
-                if (trimmed.length === 0) { result = new ArrayBuffer(0); }
-                else {
-                    try { result = pako.inflate(trimmed).buffer; }
-                    catch { result = new ArrayBuffer(0); }
-                }
+                result = decodeMultiSlotToPBF(parts.map(p => new Uint8Array(p)));
             } catch { result = new ArrayBuffer(0); }
-            for (const r of resolvers) r(result);
-            // Yield: allows fetchTileViaPIR microtask to run and MapLibre to render
-            // this tile before we decrypt the next one.
-            await new Promise(r => setTimeout(r, 0));
+            results.set(tile.key, result);
         }
+        return results;
     }
-}
+};
 
-// ─── State ────────────────────────────────────────────────────────────
-let client = null;
-let tileMapping = null;   // Map<string, number|number[]>  "z/x/y" → pirIndex or [indices]
-let pirParams = null;
-let queryCount = 0;
-let totalLatencyMs = 0;
-let lastQueryMs = 0;
-const tileCache = new LRUTileCache(500 * 1024 * 1024); // 500 MB
-const dispatcher = new TileBatchDispatcher(50);         // 50ms coalesce window
+const dispatcher = new TileBatchDispatcher(mulpirBackend, 50); // 50ms coalesce window
 
 // ─── UI helpers ───────────────────────────────────────────────────────
 function setStatus(msg) {
@@ -207,16 +96,6 @@ function setStatus(msg) {
 
 function setProgress(pct) {
     document.getElementById('loading-bar').style.width = pct + '%';
-}
-
-// ─── Extract tile data from a length-prefixed buffer ──────────────────
-// Format: [data_len: u32 LE][gzip data][zero padding...]
-// For multi-slot tiles the buffer is the concatenation of all decrypted slots.
-function extractTileData(data) {
-    if (data.length < 4) return new Uint8Array(0);
-    const len = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
-    if (len <= 0 || len + 4 > data.length) return new Uint8Array(0);
-    return data.subarray(4, 4 + len);
 }
 
 // ─── Initialization ───────────────────────────────────────────────────
@@ -288,7 +167,7 @@ async function initialize() {
         // 7. Init map
         setStatus('Starting map...');
         setProgress(95);
-        initMap(mappingData);
+        initMap(mappingData, fetchTileViaPIR);
 
         // 8. Show UI, hide loading
         setProgress(100);
@@ -375,176 +254,6 @@ function updatePirStats() {
         `${queryCount} queries | avg ${avg}ms`;
     document.getElementById('query-time').textContent =
         `${lastQueryMs.toFixed(0)}ms`;
-}
-
-// ─── MapLibre setup ───────────────────────────────────────────────────
-function parseTileURL(url) {
-    // URL format: pir://{z}/{x}/{y} or pir://tiles/{z}/{x}/{y}
-    const parts = url.replace('pir://', '').split('/');
-    // Handle both pir://z/x/y and pir://tiles/z/x/y
-    if (parts[0] === 'tiles') parts.shift();
-    return parts.map(Number);
-}
-
-function initMap(mappingData) {
-    // Register pir:// protocol
-    maplibregl.addProtocol('pir', async (params, abortController) => {
-        const [z, x, y] = parseTileURL(params.url);
-        const data = await fetchTileViaPIR(z, x, y, abortController.signal);
-        return { data };
-    });
-
-    const center = mappingData.center || [-73.9857, 40.7484];
-    const maxZoom = mappingData.max_zoom || 11;
-
-    const map = new maplibregl.Map({
-        container: 'map',
-        center: center,
-        zoom: 14,
-        minZoom: 0,
-        maxZoom: 16,
-        style: {
-            version: 8,
-            name: 'PIR Vector Tiles',
-            sources: {
-                pir: {
-                    type: 'vector',
-                    tiles: ['pir://tiles/{z}/{x}/{y}'],
-                    minzoom: 0,
-                    maxzoom: maxZoom,
-                },
-            },
-            layers: [
-                // Background
-                {
-                    id: 'background',
-                    type: 'background',
-                    paint: { 'background-color': '#1a1a2e' },
-                },
-                // Water
-                {
-                    id: 'water',
-                    type: 'fill',
-                    source: 'pir',
-                    'source-layer': 'water',
-                    paint: {
-                        'fill-color': '#1a3a5c',
-                        'fill-opacity': 0.8,
-                    },
-                },
-                // Landcover
-                {
-                    id: 'landcover',
-                    type: 'fill',
-                    source: 'pir',
-                    'source-layer': 'landcover',
-                    paint: {
-                        'fill-color': '#1e3a1e',
-                        'fill-opacity': 0.4,
-                    },
-                },
-                // Landuse
-                {
-                    id: 'landuse',
-                    type: 'fill',
-                    source: 'pir',
-                    'source-layer': 'landuse',
-                    paint: {
-                        'fill-color': '#2a2a3e',
-                        'fill-opacity': 0.5,
-                    },
-                },
-                // Park
-                {
-                    id: 'park',
-                    type: 'fill',
-                    source: 'pir',
-                    'source-layer': 'park',
-                    paint: {
-                        'fill-color': '#1e4a1e',
-                        'fill-opacity': 0.3,
-                    },
-                },
-                // Buildings
-                {
-                    id: 'building',
-                    type: 'fill',
-                    source: 'pir',
-                    'source-layer': 'building',
-                    minzoom: 10,
-                    paint: {
-                        'fill-color': '#3a3a5e',
-                        'fill-opacity': 0.6,
-                        'fill-outline-color': '#4a4a6e',
-                    },
-                },
-                // Roads — highway
-                {
-                    id: 'road-highway',
-                    type: 'line',
-                    source: 'pir',
-                    'source-layer': 'transportation',
-                    filter: ['==', 'class', 'motorway'],
-                    paint: {
-                        'line-color': '#f0a050',
-                        'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.5, 10, 3, 14, 6],
-                    },
-                },
-                // Roads — major
-                {
-                    id: 'road-major',
-                    type: 'line',
-                    source: 'pir',
-                    'source-layer': 'transportation',
-                    filter: ['in', 'class', 'trunk', 'primary'],
-                    paint: {
-                        'line-color': '#c0a060',
-                        'line-width': ['interpolate', ['linear'], ['zoom'], 7, 0.3, 10, 1.5, 14, 4],
-                    },
-                },
-                // Roads — secondary
-                {
-                    id: 'road-secondary',
-                    type: 'line',
-                    source: 'pir',
-                    'source-layer': 'transportation',
-                    filter: ['in', 'class', 'secondary', 'tertiary'],
-                    minzoom: 8,
-                    paint: {
-                        'line-color': '#808090',
-                        'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.3, 14, 2],
-                    },
-                },
-                // Roads — minor
-                {
-                    id: 'road-minor',
-                    type: 'line',
-                    source: 'pir',
-                    'source-layer': 'transportation',
-                    filter: ['in', 'class', 'minor', 'service', 'path'],
-                    minzoom: 10,
-                    paint: {
-                        'line-color': '#606070',
-                        'line-width': ['interpolate', ['linear'], ['zoom'], 10, 0.2, 14, 1],
-                    },
-                },
-                // Boundaries
-                {
-                    id: 'boundary',
-                    type: 'line',
-                    source: 'pir',
-                    'source-layer': 'boundary',
-                    paint: {
-                        'line-color': '#6a6a8e',
-                        'line-width': 1,
-                        'line-dasharray': [3, 2],
-                    },
-                },
-            ],
-        },
-    });
-
-    map.addControl(new maplibregl.NavigationControl(), 'top-left');
 }
 
 // ─── GPU metrics polling ──────────────────────────────────────────────
