@@ -53,6 +53,7 @@ const HEONGPU_STORAGE_HOST: u8 = 0x01;
 const MSG_SET_GALOIS_KEY: u32 = 0x01;
 const MSG_SET_RELIN_KEY: u32 = 0x02;
 const MSG_QUERY: u32 = 0x03;
+const MSG_BATCH_QUERY: u32 = 0x05;
 
 const STATUS_OK: u32 = 0x00;
 
@@ -352,6 +353,105 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             fail_count += 1;
         }
+    }
+
+    // ── Batch query test ────────────────────────────────────────────────
+    // Pack all tile_indices into one MSG_BATCH_QUERY and verify responses
+    // match the individual query results above.
+
+    println!("Batch query test ({} queries in one TCP call)...", args.tile_indices.len());
+    let batch_indices: Vec<usize> = args.tile_indices
+        .iter()
+        .filter(|&&i| i < num_tiles)
+        .copied()
+        .collect();
+
+    if batch_indices.len() >= 2 {
+        // Serialize each query
+        let mut query_payloads: Vec<Vec<u8>> = Vec::new();
+        for &tile_index in &batch_indices {
+            let query_index = tile_index / elements_per_plaintext;
+            let inv = inverse(1u64 << expansion_level, PLAINTEXT_MODULUS)
+                .ok_or("No modular inverse")?;
+            let mut pt = vec![0u64; dim1 + dim2];
+            pt[query_index / dim2] = inv;
+            pt[dim1 + (query_index % dim2)] = inv;
+            let query_pt = Plaintext::try_encode(&pt, Encoding::poly(), &params)?;
+            let query_ct: Ciphertext = sk.try_encrypt(&query_pt, &mut rng)?;
+            query_payloads.push(serialize_ct_heongpu(&query_ct));
+        }
+
+        // Pack batch payload: [num_queries: u32 LE] [size: u32 LE] [bytes]...
+        let num_queries = query_payloads.len() as u32;
+        let total_size = 4 + query_payloads.iter().map(|q| 4 + q.len()).sum::<usize>();
+        let mut batch_payload = Vec::with_capacity(total_size);
+        batch_payload.extend_from_slice(&num_queries.to_le_bytes());
+        for q in &query_payloads {
+            batch_payload.extend_from_slice(&(q.len() as u32).to_le_bytes());
+            batch_payload.extend_from_slice(q);
+        }
+
+        let start = Instant::now();
+        let (status, resp_bytes) = send_to_gpu(&addr, MSG_BATCH_QUERY, &batch_payload)?;
+        if status != STATUS_OK {
+            println!("  FAIL: batch rejected with status=0x{status:02x}");
+            fail_count += 1;
+        } else {
+            // Parse response: [num_responses: u32 LE] [size: u32 LE] [bytes]...
+            if resp_bytes.len() < 4 {
+                println!("  FAIL: batch response too short ({} bytes)", resp_bytes.len());
+                fail_count += 1;
+            } else {
+                let num_responses = u32::from_le_bytes(resp_bytes[..4].try_into()?) as usize;
+                if num_responses != batch_indices.len() {
+                    println!("  FAIL: expected {} responses, got {}", batch_indices.len(), num_responses);
+                    fail_count += 1;
+                } else {
+                    let mut offset = 4;
+                    let mut batch_ok = true;
+                    for (i, &tile_index) in batch_indices.iter().enumerate() {
+                        if offset + 4 > resp_bytes.len() {
+                            println!("  FAIL: response truncated at index {i}");
+                            batch_ok = false;
+                            break;
+                        }
+                        let sz = u32::from_le_bytes(resp_bytes[offset..offset + 4].try_into()?) as usize;
+                        offset += 4;
+                        if offset + sz > resp_bytes.len() {
+                            println!("  FAIL: response data truncated at index {i}");
+                            batch_ok = false;
+                            break;
+                        }
+                        let resp_ct_bytes = &resp_bytes[offset..offset + sz];
+                        offset += sz;
+
+                        let response = deserialize_ct_heongpu(resp_ct_bytes, &params, &ctx_level0)?;
+                        let pt_result = sk.try_decrypt(&response)?;
+                        let coeffs = Vec::<u64>::try_decode(&pt_result, Encoding::poly())?;
+                        let bytes = transcode_to_bytes(&coeffs, 20);
+
+                        let tile_offset = tile_index % elements_per_plaintext;
+                        let tile_start = tile_offset * tile_size;
+                        let decrypted_tile = &bytes[tile_start..tile_start + tile_size];
+                        let expected_start = 16 + tile_index * tile_size;
+                        let expected_tile = &tiles_data[expected_start..expected_start + tile_size];
+
+                        if decrypted_tile != expected_tile {
+                            println!("  FAIL: batch response {i} (tile {tile_index}) data mismatch");
+                            batch_ok = false;
+                        }
+                    }
+                    if batch_ok {
+                        println!("  PASS: {} queries in {:.1}s", num_responses, start.elapsed().as_secs_f64());
+                        pass_count += 1;
+                    } else {
+                        fail_count += 1;
+                    }
+                }
+            }
+        }
+    } else {
+        println!("  SKIP: need ≥2 tile indices for batch test (got {})", batch_indices.len());
     }
 
     // ── Summary ─────────────────────────────────────────────────────────
