@@ -69,6 +69,61 @@ def is_in_us_bbox(zoom: int, x: int, y: int) -> bool:
     return x_min <= x <= x_max and y_min <= y <= y_max
 
 
+def _varint(n: int) -> bytes:
+    """Encode a non-negative integer as a protobuf varint."""
+    result = []
+    while n > 0x7F:
+        result.append((n & 0x7F) | 0x80)
+        n >>= 7
+    result.append(n & 0x7F)
+    return bytes(result)
+
+
+def _pb_varint_field(field_num: int, value: int) -> bytes:
+    return _varint((field_num << 3) | 0) + _varint(value)
+
+
+def _pb_bytes_field(field_num: int, data: bytes) -> bytes:
+    return _varint((field_num << 3) | 2) + _varint(len(data)) + data
+
+
+def _zigzag(n: int) -> int:
+    return 2 * n if n >= 0 else -2 * n - 1
+
+
+def make_synthetic_mvt_tile() -> bytes:
+    """Return minimal valid MVT protobuf bytes (not gzip-compressed).
+
+    Encodes a single full-extent polygon in the 'landcover' source-layer so
+    that MapLibre renders each synthetic tile as a visible fill rather than
+    silently ignoring unrecognised content.
+    """
+    # Geometry: square (0,0)→(4096,0)→(4096,4096)→(0,4096)→close
+    geometry = (
+        _varint((1 << 3) | 1)            # MoveTo count=1
+        + _varint(_zigzag(0)) + _varint(_zigzag(0))     # (0, 0)
+        + _varint((3 << 3) | 2)          # LineTo count=3
+        + _varint(_zigzag(4096)) + _varint(_zigzag(0))  # Δ(+4096, 0)
+        + _varint(_zigzag(0)) + _varint(_zigzag(4096))  # Δ(0, +4096)
+        + _varint(_zigzag(-4096)) + _varint(_zigzag(0)) # Δ(-4096, 0)
+        + _varint((1 << 3) | 7)          # ClosePath count=1
+    )
+
+    feature = (
+        _pb_varint_field(3, 3)           # type = POLYGON
+        + _pb_bytes_field(4, geometry)   # geometry
+    )
+
+    layer = (
+        _pb_varint_field(15, 2)                   # version = 2
+        + _pb_bytes_field(1, b"landcover")        # name
+        + _pb_varint_field(5, 4096)               # extent
+        + _pb_bytes_field(2, feature)             # features[0]
+    )
+
+    return _pb_bytes_field(3, layer)  # Tile.layers[0]
+
+
 def pack_tile_into_slots(data: bytes, tile_size: int) -> list[bytearray]:
     """Pack tile data into one or more fixed-size PIR slots.
 
@@ -215,15 +270,7 @@ def generate_synthetic_tiles(
                 if tile_count >= count:
                     break
 
-                content = json.dumps({
-                    "z": zoom,
-                    "x": x,
-                    "y": y,
-                    "index": tile_count,
-                    "synthetic": True,
-                }).encode("utf-8")
-
-                compressed = gzip.compress(content)
+                compressed = gzip.compress(make_synthetic_mvt_tile())
                 slots = pack_tile_into_slots(compressed, tile_size)
 
                 for s in slots:
