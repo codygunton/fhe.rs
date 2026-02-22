@@ -129,7 +129,7 @@ std::vector<PIRQuery> WireFormat::deserialize_batch_query(std::span<const uint8_
     uint32_t num_queries;
     std::memcpy(&num_queries, bytes.data(), 4);
 
-    if (num_queries == 0 || num_queries > 64) {
+    if (num_queries == 0 || num_queries > 512) {
         throw std::runtime_error("Invalid batch query count: " + std::to_string(num_queries));
     }
 
