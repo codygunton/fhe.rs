@@ -57,32 +57,46 @@ struct ServerState {
 
 /// Choose Spiral params JSON for a given number of tiles and tile size.
 ///
-/// `nu_1 + nu_2` determines database capacity: `2^(nu_1 + nu_2)` items.
-/// We pick a capacity that is at least `num_tiles`, rounding up to
-/// the next supported size (128, 1024, or 8192).
+/// Parameters follow Blyss's production v1 scheme:
+///   - version=1, p=256, t_exp_left=t_exp_right=5 — triggers the right-expansion
+///     skip in spiral-rs (expansion_right_sz = 0), cutting setup size ~7x.
+///   - instances is the minimum needed to fit `tile_size` bytes per item:
+///     each chunk holds `poly_len * log2(p) / 8 = 2048` bytes (with p=256),
+///     and there are `instances * n * n` chunks per item, so
+///     `instances = ceil(tile_size / (n * n * 2048))`.
+///   - nu_1=9 (large left dimension) matches the Blyss v1 production shape;
+///     nu_2 is chosen to cover at least `num_tiles` total items.
 fn select_params_json(num_tiles: usize, tile_size: usize) -> String {
-    let log2_capacity = if num_tiles <= 128 {
-        7
-    } else if num_tiles <= 1024 {
-        10
+    // With p=256 (8 bits/coeff) and poly_len=2048: 2048 bytes per chunk.
+    // chunks = instances * n^2 = instances * 4
+    let bytes_per_chunk = 2048usize; // poly_len * log2(p) / 8
+    let chunks_needed = tile_size.div_ceil(bytes_per_chunk);
+    let instances = chunks_needed.div_ceil(4); // n^2 = 4
+
+    // nu_1=9 (left dimension = 512 rows) matches Blyss v1 production shape.
+    // nu_2 is chosen so total capacity 2^(9+nu_2) >= num_tiles.
+    let nu_1 = 9usize;
+    let nu_2 = if num_tiles <= (1 << (nu_1 + 2)) {
+        2 // 2^11 = 2048 items
+    } else if num_tiles <= (1 << (nu_1 + 4)) {
+        4 // 2^13 = 8192 items
     } else {
-        13 // 8192 items — covers up to 4213 real tiles
+        6 // 2^15 = 32768 items
     };
-    let nu_1 = log2_capacity / 2;
-    let nu_2 = log2_capacity - nu_1;
+
     serde_json::json!({
         "n": 2,
         "nu_1": nu_1,
         "nu_2": nu_2,
-        "p": 512,
-        "q2_bits": 21,
-        "s_e": 85.83,
-        "t_gsw": 10,
-        "t_conv": 4,
-        "t_exp_left": 16,
-        "t_exp_right": 56,
-        "instances": 11,
-        "db_item_size": tile_size
+        "p": 256,
+        "q2_bits": 22,
+        "t_gsw": 7,
+        "t_conv": 3,
+        "t_exp_left": 5,
+        "t_exp_right": 5,
+        "instances": instances,
+        "db_item_size": tile_size,
+        "version": 1
     })
     .to_string()
 }
