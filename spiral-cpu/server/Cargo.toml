@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "spiral-cpu-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+
+[[bin]]
+name = "spiral_server"
+path = "src/main.rs"
+
+[dependencies]
+spiral-rs = { path = "../../sdk/lib/spiral-rs", features = ["server"] }
+actix-web = { version = "4", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+memmap2 = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
