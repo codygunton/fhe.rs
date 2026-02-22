@@ -1,0 +1,167 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    overflow: hidden;
+}
+
+/* Loading screen */
+#loading-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #0a0a1a 0%, #1a1a2e 50%, #0a0a1a 100%);
+}
+
+.loading-card {
+    text-align: center;
+    max-width: 420px;
+    padding: 48px 40px;
+}
+
+.loading-icon {
+    color: #4fc3f7;
+    margin-bottom: 24px;
+}
+
+.loading-card h1 {
+    font-size: 24px;
+    font-weight: 600;
+    color: #ffffff;
+    margin-bottom: 8px;
+}
+
+.loading-subtitle {
+    font-size: 14px;
+    color: #888;
+    margin-bottom: 32px;
+}
+
+.loading-spinner {
+    width: 32px;
+    height: 32px;
+    margin: 0 auto 16px;
+    border: 3px solid #333;
+    border-top-color: #4fc3f7;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+#loading-status {
+    font-size: 13px;
+    color: #aaa;
+    min-height: 20px;
+    margin-bottom: 16px;
+}
+
+.loading-progress {
+    width: 100%;
+    height: 3px;
+    background: #222;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.loading-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #4fc3f7, #29b6f6);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+/* Map */
+#map {
+    width: 100vw;
+    height: 100vh;
+}
+
+/* Overlay panels */
+.overlay-panel {
+    position: fixed;
+    z-index: 100;
+    background: rgba(10, 10, 26, 0.88);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(79, 195, 247, 0.2);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+}
+
+/* PIR badge — top-right */
+#pir-badge {
+    top: 12px;
+    right: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+}
+
+.badge-icon {
+    color: #4fc3f7;
+    display: flex;
+    align-items: center;
+}
+
+.badge-text strong {
+    display: block;
+    font-size: 12px;
+    color: #4fc3f7;
+    letter-spacing: 0.5px;
+}
+
+.badge-text span {
+    font-size: 11px;
+    color: #888;
+}
+
+/* GPU metrics — bottom-right */
+#gpu-metrics {
+    bottom: 32px;
+    right: 12px;
+    min-width: 200px;
+}
+
+.metrics-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: #4fc3f7;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(79, 195, 247, 0.15);
+}
+
+.metrics-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 0;
+}
+
+.metrics-label {
+    color: #888;
+    font-size: 12px;
+}
+
+.metrics-value {
+    color: #e0e0e0;
+    font-size: 12px;
+    font-weight: 500;
+}

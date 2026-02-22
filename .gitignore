@@ -45,3 +45,13 @@ mulpir-gpu/demo/tiles/tile_mapping.json
 
 # Scripts
 backup_download_north_america.sh
+
+# MulPIR CPU server build
+mulpir-cpu/server/target/
+
+# MulPIR CPU WASM frontend symlinks (recreated by run_demo.sh)
+mulpir-cpu/demo/frontend/pkg
+
+# MulPIR CPU demo tiles (large files, not tracked)
+mulpir-cpu/demo/tiles/tiles.bin
+mulpir-cpu/demo/tiles/tile_mapping.json

@@ -709,6 +709,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
 
 [[package]]
+name = "mulpir-cpu-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "fhe",
+ "fhe-traits",
+ "fhe-util",
+ "getrandom 0.3.3",
+ "js-sys",
+ "rand 0.9.2",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "ndarray"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
