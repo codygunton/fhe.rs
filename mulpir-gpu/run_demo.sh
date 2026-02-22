@@ -18,7 +18,7 @@ PROXY_PORT=8000
 USE_TEST_TILES=false
 USE_SYNTHETIC=false
 USE_NGROK=false
-TILES_DIR="$ROOT/pir-map-demo/tiles"
+TILES_DIR="$ROOT/demo/tiles"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -99,16 +99,16 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── Step 1: Build WASM if needed ─────────────────────────────────────
-WASM_PKG="$ROOT/crates/fhe-wasm/pkg"
+WASM_PKG="$ROOT/../crates/fhe-wasm/pkg"
 if [[ ! -f "$WASM_PKG/fhe_wasm_bg.wasm" ]]; then
     echo "==> Building WASM (this takes ~10s)..."
-    (cd "$ROOT/crates/fhe-wasm" && wasm-pack build --target web --release)
+    (cd "$ROOT/../crates/fhe-wasm" && wasm-pack build --target web --release)
 else
     echo "==> WASM already built ($WASM_PKG)"
 fi
 
 # ─── Step 2: Symlink WASM pkg into frontend ───────────────────────────
-FRONTEND_PKG="$ROOT/pir-map-demo/frontend/pkg"
+FRONTEND_PKG="$ROOT/demo/frontend/pkg"
 if [[ ! -e "$FRONTEND_PKG" ]]; then
     echo "==> Symlinking WASM pkg into frontend..."
     ln -sf "$WASM_PKG" "$FRONTEND_PKG"
@@ -116,7 +116,7 @@ fi
 
 # ─── Step 3: Determine tile database ──────────────────────────────────
 if $USE_TEST_TILES; then
-    TILES_DIR="$ROOT/mulpir-gpu-server/test_vectors"
+    TILES_DIR="$ROOT/server/test_vectors"
     TILES_BIN="$TILES_DIR/tiles.bin"
     # Read num_tiles from params.json
     NUM_TILES=$(python3 -c "import json; print(json.load(open('$TILES_DIR/params.json'))['num_tiles'])")
@@ -161,7 +161,7 @@ print(f'Created tile_mapping.json with {n} tiles at z={z}')
 elif $USE_SYNTHETIC; then
     echo "==> Generating synthetic tiles..."
     mkdir -p "$TILES_DIR"
-    python3 "$ROOT/pir-map-demo/tiles/prepare_tiles.py" \
+    python3 "$ROOT/demo/tiles/prepare_tiles.py" \
         --synthetic --synthetic-count 1000 \
         --output "$TILES_DIR"
     TILES_BIN="$TILES_DIR/tiles.bin"
@@ -171,7 +171,7 @@ else
     TILES_BIN="$TILES_DIR/tiles.bin"
     if [[ ! -f "$TILES_BIN" ]]; then
         echo "ERROR: $TILES_BIN not found."
-        echo "  Run: python3 $ROOT/pir-map-demo/tiles/prepare_tiles.py --input <mbtiles> --output $TILES_DIR"
+        echo "  Run: python3 $ROOT/demo/tiles/prepare_tiles.py --input <mbtiles> --output $TILES_DIR"
         echo "  Or use: $0 --test-tiles  or  $0 --synthetic"
         exit 1
     fi
@@ -182,10 +182,11 @@ fi
 echo "==> Database: $TILES_BIN ($NUM_TILES PIR slots, ${TILE_SIZE}B each)"
 
 # ─── Step 4: Start GPU server ─────────────────────────────────────────
-GPU_SERVER="$ROOT/mulpir-gpu-server/build/mulpir_server"
+GPU_SERVER="$ROOT/server/build/mulpir_server"
+export LD_LIBRARY_PATH="$ROOT/server/build/_deps/fmt-build${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [[ ! -x "$GPU_SERVER" ]]; then
     echo "ERROR: GPU server not found at $GPU_SERVER"
-    echo "  Build it first: cd mulpir-gpu-server && mkdir -p build && cd build && cmake .. && make -j"
+    echo "  Build it first: cd mulpir-gpu/server && mkdir -p build && cd build && cmake .. && make -j"
     exit 1
 fi
 
@@ -227,7 +228,7 @@ done
 
 # ─── Step 5: Start Flask proxy ────────────────────────────────────────
 echo "==> Starting Flask proxy on port $PROXY_PORT..."
-python3 "$ROOT/pir-map-demo/proxy/server.py" \
+python3 "$ROOT/demo/proxy/server.py" \
     --gpu-port "$GPU_PORT" \
     --port "$PROXY_PORT" \
     --tiles-dir "$TILES_DIR" &

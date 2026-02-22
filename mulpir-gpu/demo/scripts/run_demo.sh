@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DEMO_DIR="$PROJECT_ROOT/pir-map-demo"
+DEMO_DIR="$PROJECT_ROOT/demo"
 
 GPU_PORT=8080
 PROXY_PORT=8000
@@ -83,10 +83,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── Step 1: Build WASM if needed ─────────────────────────────────────
-WASM_PKG="$PROJECT_ROOT/crates/fhe-wasm/pkg"
+WASM_PKG="$PROJECT_ROOT/../crates/fhe-wasm/pkg"
 if [[ ! -f "$WASM_PKG/fhe_wasm_bg.wasm" ]]; then
     echo "==> Building WASM (this takes ~10s)..."
-    (cd "$PROJECT_ROOT/crates/fhe-wasm" && wasm-pack build --target web --release)
+    (cd "$PROJECT_ROOT/../crates/fhe-wasm" && wasm-pack build --target web --release)
 else
     echo "==> WASM already built ($WASM_PKG)"
 fi
@@ -100,7 +100,7 @@ fi
 
 # ─── Step 3: Determine tile database ──────────────────────────────────
 if $USE_TEST_TILES; then
-    TILES_DIR="$PROJECT_ROOT/mulpir-gpu-server/test_vectors"
+    TILES_DIR="$PROJECT_ROOT/server/test_vectors"
     TILES_BIN="$TILES_DIR/tiles.bin"
     # Read num_tiles from params.json
     NUM_TILES=$(python3 -c "import json; print(json.load(open('$TILES_DIR/params.json'))['num_tiles'])")
@@ -166,10 +166,11 @@ fi
 echo "==> Database: $TILES_BIN ($NUM_TILES PIR slots, ${TILE_SIZE}B each)"
 
 # ─── Step 4: Start GPU server ─────────────────────────────────────────
-GPU_SERVER="$PROJECT_ROOT/mulpir-gpu-server/build/mulpir_server"
+GPU_SERVER="$PROJECT_ROOT/server/build/mulpir_server"
+export LD_LIBRARY_PATH="$PROJECT_ROOT/server/build/_deps/fmt-build${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [[ ! -x "$GPU_SERVER" ]]; then
     echo "ERROR: GPU server not found at $GPU_SERVER"
-    echo "  Build it first: cd mulpir-gpu-server && mkdir -p build && cd build && cmake .. && make -j"
+    echo "  Build it first: cd server && mkdir -p build && cd build && cmake .. && make -j"
     exit 1
 fi
 
