@@ -109,17 +109,19 @@ fn select_params_json(num_tiles: usize, tile_size: usize) -> String {
 /// Response: UUID string (`text/plain`) that identifies this session's keys.
 async fn setup(state: web::Data<Arc<ServerState>>, body: web::Bytes) -> HttpResponse {
     let params = state.params;
-    // Deserialize to validate the bytes, then re-serialize for storage so that
-    // we avoid holding a `PublicParameters<'a>` with a lifetime tied to `params`.
-    let pp = PublicParameters::deserialize(params, &body);
-    let serialized = pp.serialize();
+    // Validate the bytes by deserializing (panics on length mismatch).
+    // Store the original bytes directly — re-serializing is incorrect because
+    // PublicParameters::serialize() expands v_expansion_right even when
+    // expansion_right_sz=0 (version=1, t_exp_left==t_exp_right), producing
+    // more bytes than setup_bytes() and breaking re-deserialization.
+    let _pp = PublicParameters::deserialize(params, &body);
     let uuid = Uuid::new_v4().to_string();
     {
         let mut map = state
             .pub_params
             .write()
             .expect("pub_params RwLock poisoned");
-        map.insert(uuid.clone(), serialized);
+        map.insert(uuid.clone(), body.to_vec());
     }
     info!(uuid = %uuid, "stored public params for session");
     HttpResponse::Ok()
