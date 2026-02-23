@@ -65,11 +65,14 @@ const spiralBackend = {
             const tile = tiles[ti];
             let result;
             try {
-                const decoded = slotParts[ti].map(raw => new Uint8Array(client.decode_response(raw)));
+                const tileSize = pirParams.tile_size;
+                const decoded = slotParts[ti].map(raw =>
+                    new Uint8Array(client.decode_response(raw)).subarray(0, tileSize)
+                );
                 result = decoded.length > 1
                     ? decodeMultiSlotToPBF(decoded)
                     : decodeSlotToPBF(decoded[0]);
-            } catch { result = new ArrayBuffer(0); }
+            } catch(e) { console.error(`[decode] ${tile.key}: ERROR`, e); result = new ArrayBuffer(0); }
             results.set(tile.key, result);
         }
         return results;
