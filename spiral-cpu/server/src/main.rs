@@ -57,9 +57,11 @@ struct ServerState {
 
 /// Choose Spiral params JSON for a given number of tiles and tile size.
 ///
-/// Parameters follow Blyss's production v1 scheme:
-///   - version=1, p=256, t_exp_left=t_exp_right=5 — triggers the right-expansion
-///     skip in spiral-rs (expansion_right_sz = 0), cutting setup size ~7x.
+/// Parameters use spiral-rs defaults (t_conv=4, t_exp_right=56) which are
+/// known-correct. The Blyss v1 optimization (version=1, t_exp_right=5) that
+/// skips right-expansion keys is broken — t_exp_right=5 introduces too much
+/// decryption noise regardless of the version flag.
+///
 ///   - instances is the minimum needed to fit `tile_size` bytes per item:
 ///     each chunk holds `poly_len * log2(p) / 8 = 2048` bytes (with p=256),
 ///     and there are `instances * n * n` chunks per item, so
@@ -91,12 +93,11 @@ fn select_params_json(num_tiles: usize, tile_size: usize) -> String {
         "p": 256,
         "q2_bits": 22,
         "t_gsw": 7,
-        "t_conv": 3,
+        "t_conv": 4,
         "t_exp_left": 5,
-        "t_exp_right": 5,
+        "t_exp_right": 56,
         "instances": instances,
-        "db_item_size": tile_size,
-        "version": 1
+        "db_item_size": tile_size
     })
     .to_string()
 }
