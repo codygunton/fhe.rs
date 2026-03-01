@@ -21,10 +21,14 @@
 // ── DevicePolyMatrix ──────────────────────────────────────────────────────────
 // Owns a device-side buffer holding a rows×cols polynomial matrix.
 // Buffer size: rows * cols * CRT_COUNT * POLY_LEN * sizeof(uint64_t) bytes.
+//
+// Non-owning views can be created with DevicePolyMatrix::view() — these hold
+// a raw pointer into an externally-managed buffer and do NOT free it on destruction.
 struct DevicePolyMatrix {
     uint64_t* d_data = nullptr;
     uint32_t  rows   = 0;
     uint32_t  cols   = 0;
+    bool      owned_ = true;  // false for non-owning views (see view())
 
     DevicePolyMatrix() = default;
     DevicePolyMatrix(uint32_t r, uint32_t c);
@@ -35,8 +39,17 @@ struct DevicePolyMatrix {
     DevicePolyMatrix& operator=(const DevicePolyMatrix&) = delete;
 
     // Move-constructible so we can store in std::vector.
+    // Propagates owned_ so views stay non-owning after move.
     DevicePolyMatrix(DevicePolyMatrix&& other) noexcept;
     DevicePolyMatrix& operator=(DevicePolyMatrix&& other) noexcept;
+
+    // Create a non-owning view into an externally-managed device buffer.
+    // The caller must ensure the buffer outlives the returned view.
+    static DevicePolyMatrix view(uint64_t* ptr, uint32_t r, uint32_t c) {
+        DevicePolyMatrix m;
+        m.d_data = ptr; m.rows = r; m.cols = c; m.owned_ = false;
+        return m;
+    }
 
     // Number of u64 words in this matrix.
     size_t num_words() const {

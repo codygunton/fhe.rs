@@ -30,34 +30,43 @@ const spiralBackend = {
 
         // Generate all query payloads, yielding every 5 to keep the page responsive
         const uuidBytes = new TextEncoder().encode(sessionUuid);
+        const qBytes = pirParams.query_bytes;
         const queryPayloads = [];
         for (let i = 0; i < queryList.length; i++) {
-            const qBytes = new Uint8Array(client.generate_query(queryList[i].pirIdx));
-            const payload = new Uint8Array(36 + qBytes.length);
-            payload.set(uuidBytes, 0);
-            payload.set(qBytes, 36);
-            queryPayloads.push(payload);
+            queryPayloads.push(new Uint8Array(client.generate_query(queryList[i].pirIdx)));
             if ((i + 1) % 5 === 0) await new Promise(r => setTimeout(r, 0));
         }
 
-        // Send all queries in parallel
-        const responsePromises = queryPayloads.map(payload =>
-            fetch('/api/private-read', {
-                method: 'POST',
-                body: payload,
-                headers: { 'Content-Type': 'application/octet-stream' },
-                signal: abortSignal,
-            }).then(r => {
-                if (!r.ok) throw new Error(`/api/private-read failed: ${r.status}`);
-                return r.arrayBuffer();
-            })
-        );
-        const rawResponses = await Promise.all(responsePromises);
+        // Build batch payload: [UUID:36][count:uint32LE][q0][q1]...[qB-1]
+        const B = queryList.length;
+        const batchPayload = new Uint8Array(36 + 4 + B * qBytes);
+        batchPayload.set(uuidBytes, 0);
+        new DataView(batchPayload.buffer).setUint32(36, B, /*littleEndian=*/true);
+        for (let i = 0; i < B; i++) {
+            batchPayload.set(queryPayloads[i], 36 + 4 + i * qBytes);
+        }
+
+        // One fetch for all queries
+        const rawResp = await fetch('/api/private-read-batch', {
+            method: 'POST',
+            body: batchPayload,
+            headers: { 'Content-Type': 'application/octet-stream' },
+            signal: abortSignal,
+        });
+        if (!rawResp.ok) throw new Error(`/api/private-read-batch failed: ${rawResp.status}`);
+        const rawBuf = await rawResp.arrayBuffer();
+
+        // Slice response: each query gets response_bytes bytes
+        const rBytes = pirParams.response_bytes;
+        const rawResponses = [];
+        for (let i = 0; i < B; i++) {
+            rawResponses.push(new Uint8Array(rawBuf, i * rBytes, rBytes));
+        }
 
         // Group by tile, decode, build result map
         const slotParts = tiles.map(() => []);
         for (let i = 0; i < queryList.length; i++) {
-            slotParts[queryList[i].tileIdx].push(new Uint8Array(rawResponses[i]));
+            slotParts[queryList[i].tileIdx].push(rawResponses[i]);
         }
 
         const results = new Map();
@@ -79,7 +88,7 @@ const spiralBackend = {
     }
 };
 
-const dispatcher = new TileBatchDispatcher(spiralBackend, 50); // 50ms coalesce window
+const dispatcher = new TileBatchDispatcher(spiralBackend, 200); // 200ms coalesce window
 
 // ─── UI helpers ───────────────────────────────────────────────────────
 function setStatus(msg) {
@@ -162,28 +171,6 @@ async function initialize() {
     }
 }
 
-// ─── Speculative prefetch for spatial neighbours ──────────────────────
-const NEIGHBOR_OFFSETS = [
-    [-1,-1],[0,-1],[1,-1],
-    [-1, 0],       [1, 0],
-    [-1, 1],[0, 1],[1, 1],
-];
-
-function prefetchNeighbors(z, x, y) {
-    for (const [dx, dy] of NEIGHBOR_OFFSETS) {
-        const nx = x + dx, ny = y + dy;
-        const key = `${z}/${nx}/${ny}`;
-        if (!tileMapping || !tileMapping.has(key)) continue;
-        if (tileCache.has(key)) continue;
-        const pirIndex = tileMapping.get(key);
-        const slots = Array.isArray(pirIndex) ? pirIndex : [pirIndex];
-        // Fire-and-forget: errors silently discarded
-        dispatcher.enqueue(z, nx, ny, slots, null)
-            .then(data => { if (data.byteLength > 0) tileCache.set(key, data); })
-            .catch(() => {});
-    }
-}
-
 // ─── PIR tile fetching ────────────────────────────────────────────────
 async function fetchTileViaPIR(z, x, y, abortSignal) {
     const key = `${z}/${x}/${y}`;
@@ -206,9 +193,7 @@ async function fetchTileViaPIR(z, x, y, abortSignal) {
         const pbf = await dispatcher.enqueue(z, x, y, slots, abortSignal);
         if (pbf.byteLength === 0) return pbf;
 
-        // Store in cache and speculatively prefetch neighbours
         tileCache.set(key, pbf);
-        prefetchNeighbors(z, x, y);
 
         const elapsed = performance.now() - t0;
         queryCount++;

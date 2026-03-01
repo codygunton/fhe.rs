@@ -83,6 +83,29 @@ def create_app(spiral_host: str, spiral_port: int, tiles_dir: str) -> Flask:
             return jsonify({"status": "error", "message": str(exc)}), 502
 
     # ------------------------------------------------------------------ #
+    # Spiral PIR batch query endpoint
+    # ------------------------------------------------------------------ #
+
+    @app.route("/api/private-read-batch", methods=["POST"])
+    def private_read_batch():
+        payload = request.get_data()
+        logger.info(
+            "Forwarding /api/private-read-batch (%d bytes) to spiral server", len(payload)
+        )
+        try:
+            resp = requests.post(
+                f"{spiral_base}/api/private-read-batch",
+                data=payload,
+                headers={"Content-Type": "application/octet-stream"},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return Response(resp.content, content_type="application/octet-stream")
+        except Exception as exc:
+            logger.error("Spiral server batch query failed: %s", exc)
+            return jsonify({"status": "error", "message": str(exc)}), 502
+
+    # ------------------------------------------------------------------ #
     # PIR parameters — forwarded from Spiral server
     # ------------------------------------------------------------------ #
 

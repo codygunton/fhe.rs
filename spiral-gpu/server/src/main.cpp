@@ -40,6 +40,10 @@
 std::vector<uint8_t> process_query_gpu(
     const SpiralParams&, const PublicParamsGPU&,
     const uint8_t*, size_t, const DeviceDB&, cudaStream_t);
+std::vector<std::vector<uint8_t>> process_queries_batch_gpu(
+    const SpiralParams&, const PublicParamsGPU&,
+    const std::vector<std::pair<const uint8_t*, size_t>>&,
+    const DeviceDB&, cudaStream_t);
 DeviceDB load_db_to_gpu(const uint8_t*, size_t, const SpiralParams&);
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -177,14 +181,86 @@ static void handle_private_read(ServerState& st, const httplib::Request& req,
     }
 }
 
+static void handle_private_read_batch(ServerState& st,
+                                      const httplib::Request& req,
+                                      httplib::Response& res) {
+    constexpr size_t UUID_LEN = 36;
+    const auto& body = req.body;
+
+    // Parse: [UUID:36][count:uint32LE][queries...]
+    if (body.size() < UUID_LEN + 4) {
+        res.status = 400;
+        res.set_content("body too short", "text/plain");
+        return;
+    }
+    std::string uuid(body.data(), UUID_LEN);
+    uint32_t count = 0;
+    std::memcpy(&count, body.data() + UUID_LEN, 4);
+    if (count == 0 || count > 256) {
+        res.status = 400;
+        res.set_content("invalid batch count", "text/plain");
+        return;
+    }
+
+    const PublicParamsGPU* pp_ptr = nullptr;
+    {
+        std::shared_lock lock(st.sessions_mu);
+        auto it = st.sessions.find(uuid);
+        if (it == st.sessions.end()) {
+            res.status = 404;
+            res.set_content("unknown session UUID: " + uuid, "text/plain");
+            return;
+        }
+        pp_ptr = &it->second;
+    }
+
+    const size_t query_bytes = st.params.query_bytes();
+    const size_t expected    = UUID_LEN + 4 + static_cast<size_t>(count) * query_bytes;
+    if (body.size() < expected) {
+        res.status = 400;
+        res.set_content("batch body too short", "text/plain");
+        return;
+    }
+
+    std::vector<std::pair<const uint8_t*, size_t>> queries;
+    queries.reserve(count);
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(body.data()) + UUID_LEN + 4;
+    for (uint32_t i = 0; i < count; ++i) {
+        queries.emplace_back(base + i * query_bytes, query_bytes);
+    }
+
+    try {
+        std::vector<std::vector<uint8_t>> responses;
+        {
+            std::lock_guard<std::mutex> gpu_lock(st.gpu_mu);
+            responses = process_queries_batch_gpu(
+                st.params, *pp_ptr, queries, st.db, /*stream=*/0);
+        }
+
+        const size_t resp_bytes = st.params.response_bytes();
+        std::string out;
+        out.reserve(static_cast<size_t>(count) * resp_bytes);
+        for (auto& r : responses) {
+            out.append(reinterpret_cast<const char*>(r.data()), r.size());
+        }
+        res.status = 200;
+        res.set_content(out, "application/octet-stream");
+    } catch (const std::exception& e) {
+        std::cerr << "[private-read-batch] error: " << e.what() << "\n";
+        res.status = 500;
+        res.set_content("batch query processing failed", "text/plain");
+    }
+}
+
 static void handle_params(ServerState& st, const httplib::Request&, httplib::Response& res) {
     nlohmann::json j;
-    j["num_tiles"]    = st.params.num_items();
-    j["tile_size"]    = st.params.db_item_size;
-    j["spiral_params"]= st.params_json;
-    j["setup_bytes"]  = st.params.setup_bytes();
-    j["query_bytes"]  = st.params.query_bytes();
-    j["num_items"]    = st.params.num_items();
+    j["num_tiles"]      = st.params.num_items();
+    j["tile_size"]      = st.params.db_item_size;
+    j["spiral_params"]  = st.params_json;
+    j["setup_bytes"]    = st.params.setup_bytes();
+    j["query_bytes"]    = st.params.query_bytes();
+    j["response_bytes"] = st.params.response_bytes();
+    j["num_items"]      = st.params.num_items();
     res.status = 200;
     res.set_content(j.dump(), "application/json");
 }
@@ -266,6 +342,10 @@ int main(int argc, char** argv) {
     svr.Post("/api/private-read", [&](const httplib::Request& req, httplib::Response& res) {
         handle_private_read(state, req, res);
     });
+    svr.Post("/api/private-read-batch",
+             [&](const httplib::Request& req, httplib::Response& res) {
+                 handle_private_read_batch(state, req, res);
+             });
     svr.Get("/api/params", [&](const httplib::Request& req, httplib::Response& res) {
         handle_params(state, req, res);
     });
@@ -277,7 +357,11 @@ int main(int argc, char** argv) {
     });
 
     std::cout << "[spiral-gpu] Listening on port " << cfg.port << "\n";
-    svr.listen("0.0.0.0", cfg.port);
+    if (!svr.listen("0.0.0.0", cfg.port)) {
+        std::cerr << "[spiral-gpu] ERROR: listen() failed — port " << cfg.port
+                  << " may be in use. Run: ss -tlnp 'sport = :" << cfg.port << "'\n";
+        return 1;
+    }
 
     return 0;
 }

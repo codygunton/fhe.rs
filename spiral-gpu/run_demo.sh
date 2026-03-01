@@ -92,6 +92,13 @@ if [[ ! -e "$ROOT/demo/proxy" ]]; then
     ln -sf "$ROOT/../spiral-cpu/demo/proxy" "$ROOT/demo/proxy"
 fi
 
+# Install Python proxy dependencies
+PROXY_REQS="$ROOT/demo/proxy/requirements.txt"
+if [[ -f "$PROXY_REQS" ]]; then
+    echo "==> Installing proxy Python dependencies..."
+    python3 -m pip install -q -r "$PROXY_REQS"
+fi
+
 # ─── Step 3: Tile database ─────────────────────────────────────────────────────
 if $USE_SYNTHETIC; then
     echo "==> Generating synthetic tiles..."

@@ -26,26 +26,30 @@ DevicePolyMatrix::DevicePolyMatrix(uint32_t r, uint32_t c)
 }
 
 DevicePolyMatrix::~DevicePolyMatrix() {
-    if (d_data) { cudaFree(d_data); d_data = nullptr; }
+    if (owned_ && d_data) { cudaFree(d_data); }
+    d_data = nullptr;
 }
 
 DevicePolyMatrix::DevicePolyMatrix(DevicePolyMatrix&& other) noexcept
-    : d_data(other.d_data), rows(other.rows), cols(other.cols)
+    : d_data(other.d_data), rows(other.rows), cols(other.cols), owned_(other.owned_)
 {
     other.d_data = nullptr;
     other.rows   = 0;
     other.cols   = 0;
+    other.owned_ = true;  // moved-from is safely inert (d_data is null)
 }
 
 DevicePolyMatrix& DevicePolyMatrix::operator=(DevicePolyMatrix&& other) noexcept {
     if (this != &other) {
-        if (d_data) cudaFree(d_data);
+        if (owned_ && d_data) cudaFree(d_data);
         d_data       = other.d_data;
         rows         = other.rows;
         cols         = other.cols;
+        owned_       = other.owned_;
         other.d_data = nullptr;
         other.rows   = 0;
         other.cols   = 0;
+        other.owned_ = true;  // moved-from is safely inert
     }
     return *this;
 }
