@@ -55,6 +55,23 @@ struct ServerState {
     params_json: String,
 }
 
+/// Compute the response size (bytes) for a given set of Spiral params.
+///
+/// Mirrors the C++ SpiralParams::response_bytes() formula exactly:
+///   q1 = 4*P = 1024  →  q1_bits = 10
+///   q2_bits from params
+///   num_bits = instances * (q2_bits*n*poly_len + q1_bits*n*n*poly_len)
+///   round up to next 64-bit boundary
+fn response_bytes_for_params(params: &Params) -> usize {
+    let q1_bits = 10usize;
+    let q2_bits = params.q2_bits as usize;
+    let n = params.n;
+    let poly_len = params.poly_len;
+    let instances = params.instances;
+    let num_bits = instances * (q2_bits * n * poly_len + q1_bits * n * n * poly_len);
+    (num_bits + 63) / 64 * 8
+}
+
 /// Choose Spiral params JSON for a given number of tiles and tile size.
 ///
 /// Parameters use spiral-rs defaults (t_conv=4, t_exp_right=56) which are
@@ -183,6 +200,83 @@ async fn private_read(
     }
 }
 
+/// `POST /api/private-read-batch`
+///
+/// Body: `[UUID: 36 ASCII bytes][count: u32 LE][query_0][query_1]...[query_{B-1}]`
+///
+/// Processes all B queries sequentially (sharing one deserialized PublicParameters)
+/// and returns concatenated response bytes: `[response_0][response_1]...[response_{B-1}]`.
+async fn private_read_batch(
+    state: web::Data<Arc<ServerState>>,
+    body: web::Bytes,
+) -> HttpResponse {
+    const UUID_LEN: usize = 36;
+    if body.len() < UUID_LEN + 4 {
+        return HttpResponse::BadRequest().body("body too short");
+    }
+
+    let uuid = match std::str::from_utf8(&body[..UUID_LEN]) {
+        Ok(s) => s.to_string(),
+        Err(_) => return HttpResponse::BadRequest().body("UUID prefix is not valid UTF-8"),
+    };
+
+    let count = u32::from_le_bytes([
+        body[UUID_LEN],
+        body[UUID_LEN + 1],
+        body[UUID_LEN + 2],
+        body[UUID_LEN + 3],
+    ]) as usize;
+    if count == 0 || count > 256 {
+        return HttpResponse::BadRequest().body("invalid batch count");
+    }
+
+    let params = state.params;
+    let query_size = params.query_bytes();
+    let expected = UUID_LEN + 4 + count * query_size;
+    if body.len() < expected {
+        return HttpResponse::BadRequest().body("batch body too short");
+    }
+
+    let pp_bytes = {
+        let map = state.pub_params.read().expect("pub_params RwLock poisoned");
+        match map.get(&uuid) {
+            Some(b) => b.clone(),
+            None => {
+                return HttpResponse::NotFound()
+                    .body(format!("unknown session UUID: {uuid}"));
+            }
+        }
+    };
+
+    let base = UUID_LEN + 4;
+    let query_bytes_list: Vec<Vec<u8>> = (0..count)
+        .map(|i| body[base + i * query_size..base + (i + 1) * query_size].to_vec())
+        .collect();
+
+    let state_clone = state.clone();
+    let result = web::block(move || {
+        let pp = PublicParameters::deserialize(params, &pp_bytes);
+        let mut combined = Vec::new();
+        for qb in query_bytes_list {
+            let query = Query::deserialize(params, &qb);
+            let resp = process_query(params, &pp, &query, &state_clone.db);
+            combined.extend_from_slice(&resp);
+        }
+        combined
+    })
+    .await;
+
+    match result {
+        Ok(resp) => HttpResponse::Ok()
+            .content_type("application/octet-stream")
+            .body(resp),
+        Err(err) => {
+            error!(error = %err, "batch process_query failed");
+            HttpResponse::InternalServerError().body("batch query processing failed")
+        }
+    }
+}
+
 /// `GET /api/params`
 ///
 /// Returns a JSON object describing the server's Spiral parameters and
@@ -195,6 +289,7 @@ async fn api_params(state: web::Data<Arc<ServerState>>) -> HttpResponse {
         "spiral_params": state.params_json,
         "setup_bytes": params.setup_bytes(),
         "query_bytes": params.query_bytes(),
+        "response_bytes": response_bytes_for_params(params),
         "num_items": params.num_items(),
     });
     HttpResponse::Ok().json(body)
@@ -276,6 +371,7 @@ async fn main() -> anyhow::Result<()> {
             .wrap(middleware::Logger::default())
             .route("/api/setup", web::post().to(setup))
             .route("/api/private-read", web::post().to(private_read))
+            .route("/api/private-read-batch", web::post().to(private_read_batch))
             .route("/api/params", web::get().to(api_params))
             .route("/api/tile-mapping", web::get().to(tile_mapping))
     })
