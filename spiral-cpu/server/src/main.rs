@@ -253,28 +253,36 @@ async fn private_read_batch(
         .map(|i| body[base + i * query_size..base + (i + 1) * query_size].to_vec())
         .collect();
 
-    let state_clone = state.clone();
-    let result = web::block(move || {
-        let pp = PublicParameters::deserialize(params, &pp_bytes);
-        let mut combined = Vec::new();
-        for qb in query_bytes_list {
-            let query = Query::deserialize(params, &qb);
-            let resp = process_query(params, &pp, &query, &state_clone.db);
-            combined.extend_from_slice(&resp);
-        }
-        combined
-    })
-    .await;
+    // Spawn one blocking task per query so they run in parallel on the
+    // thread pool — same CPU utilisation as B separate /api/private-read
+    // requests, but with one HTTP round-trip.
+    let handles: Vec<_> = query_bytes_list
+        .into_iter()
+        .map(|qb| {
+            let state_clone = state.clone();
+            let pp_bytes = pp_bytes.clone();
+            tokio::task::spawn_blocking(move || {
+                let pp = PublicParameters::deserialize(params, &pp_bytes);
+                let query = Query::deserialize(params, &qb);
+                process_query(params, &pp, &query, &state_clone.db)
+            })
+        })
+        .collect();
 
-    match result {
-        Ok(resp) => HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(resp),
-        Err(err) => {
-            error!(error = %err, "batch process_query failed");
-            HttpResponse::InternalServerError().body("batch query processing failed")
+    let mut combined = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(resp) => combined.extend_from_slice(&resp),
+            Err(err) => {
+                error!(error = %err, "batch process_query task panicked");
+                return HttpResponse::InternalServerError()
+                    .body("batch query processing failed");
+            }
         }
     }
+    HttpResponse::Ok()
+        .content_type("application/octet-stream")
+        .body(combined)
 }
 
 /// `GET /api/params`
