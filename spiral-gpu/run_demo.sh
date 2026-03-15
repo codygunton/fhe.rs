@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SPIRAL_GPU_PORT=8082
-PROXY_PORT=8004
+PROXY_PORT=8002
 USE_SYNTHETIC=false
 USE_NGROK=false
 TILES_DIR="$ROOT/demo/tiles"

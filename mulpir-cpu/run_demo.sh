@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MULPIR_PORT=8081
-PROXY_PORT=8003
+PROXY_PORT=8002
 USE_SYNTHETIC=false
 USE_NGROK=false
 TILES_DIR="$ROOT/demo/tiles"

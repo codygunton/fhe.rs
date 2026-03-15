@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GPU_PORT=8080
-PROXY_PORT=8000
+PROXY_PORT=8002
 USE_TEST_TILES=false
 USE_SYNTHETIC=false
 USE_NGROK=false
