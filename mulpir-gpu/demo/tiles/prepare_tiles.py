@@ -228,13 +228,14 @@ def extract_tiles_from_mbtiles(
     center_lon = (ACTIVE_BBOX["west"] + ACTIVE_BBOX["east"]) / 2
     center_lat = (ACTIVE_BBOX["south"] + ACTIVE_BBOX["north"]) / 2
 
+    actual_max_zoom = max((int(k.split("/")[0]) for k in tiles_dict), default=0)
     tile_mapping = {
         "num_tiles": tile_count,
         "num_pir_slots": slot_index,
         "tile_size": tile_size,
         "center": [round(center_lon, 2), round(center_lat, 2)],
         "min_zoom": 0,
-        "max_zoom": max_zoom,
+        "max_zoom": actual_max_zoom,
         "tiles": tiles_dict,
     }
 
@@ -287,13 +288,14 @@ def generate_synthetic_tiles(
 
     log.info("Generated %d synthetic tiles in %d PIR slots", tile_count, slot_index)
 
+    actual_max_zoom = max((int(k.split("/")[0]) for k in tiles_dict), default=0)
     tile_mapping = {
         "num_tiles": tile_count,
         "num_pir_slots": slot_index,
         "tile_size": tile_size,
         "center": [-98.5, 39.8],
         "min_zoom": 0,
-        "max_zoom": max_zoom,
+        "max_zoom": actual_max_zoom,
         "tiles": tiles_dict,
     }
 
