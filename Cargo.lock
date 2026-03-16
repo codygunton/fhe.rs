@@ -1630,6 +1630,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ypir-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom 0.2.17",
+ "js-sys",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde_json",
+ "spiral-rs",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"

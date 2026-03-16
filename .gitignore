@@ -55,3 +55,9 @@ mulpir-cpu/demo/frontend/pkg
 # MulPIR CPU demo tiles (large files, not tracked)
 mulpir-cpu/demo/tiles/tiles.bin
 mulpir-cpu/demo/tiles/tile_mapping.json
+
+# YPIR CPU server build
+ypir-cpu/server/target/
+
+# YPIR CPU WASM frontend symlinks (recreated by run_demo.sh)
+ypir-cpu/demo/frontend/pkg
