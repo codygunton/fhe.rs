@@ -373,8 +373,15 @@ __global__ void ntt_forward_kernel(
         s[lower] = static_cast<uint64_t>(curr_x)
                    + static_cast<uint64_t>(two_times_mod_u32) - q_new;
 
-        __syncthreads();
+        if (mm < 6) {
+            __syncthreads();
+        } else {
+            __syncwarp(0xffffffff);
+        }
     }
+    // The last warp-sync stage (mm=10) only ensures within-warp visibility.
+    // The final reduction reads s[tid] written by thread tid/2 (possibly another warp).
+    __syncthreads();
 
     // Final two-step reduction: bring values from [0, 2q) to [0, q)
     const uint64_t twoq = static_cast<uint64_t>(two_times_mod_u32);
@@ -468,8 +475,14 @@ __global__ void ntt_inverse_kernel(
         s[upper] = res_x;
         s[lower] = res_y;
 
-        __syncthreads();
+        if (mm < 6) {
+            __syncthreads();
+        } else {
+            __syncwarp(0xffffffff);
+        }
     }
+    // Inverse ends at mm=0 which uses __syncthreads above (mm=0 < 6), so
+    // the final reduction always sees consistent shared memory. ✓
 
     // Final two-step reduction
     uint64_t v0 = s[tid];
