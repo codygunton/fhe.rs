@@ -15,6 +15,7 @@
 
 #include "types.hpp"
 #include "params.hpp"
+#include "../kernels/arith.cuh"
 
 #include <cstdint>
 #include <stdexcept>
@@ -81,10 +82,10 @@ __global__ void db_multiply_kernel(
 
         // Reduce every 128 steps: 128 * q^2 < 128 * 2^56 = 2^63, safe in uint64_t.
         if ((j & 127) == 127) {
-            acc_n0_0 %= q0;
-            acc_n0_1 %= q0;
-            acc_n1_0 %= q1;
-            acc_n1_1 %= q1;
+            acc_n0_0 = barrett_reduce_u64(acc_n0_0, d_bc0);
+            acc_n0_1 = barrett_reduce_u64(acc_n0_1, d_bc0);
+            acc_n1_0 = barrett_reduce_u64(acc_n1_0, d_bc1);
+            acc_n1_1 = barrett_reduce_u64(acc_n1_1, d_bc1);
         }
     }
 
@@ -99,10 +100,10 @@ __global__ void db_multiply_kernel(
     constexpr uint32_t CRT = SpiralParams::CRT_COUNT;
     const size_t base = static_cast<size_t>(ii) * 2 * CRT * N;
 
-    d_out[base + 0 * CRT * N + 0 * N + z] = acc_n0_0 % q0;
-    d_out[base + 0 * CRT * N + 1 * N + z] = acc_n1_0 % q1;
-    d_out[base + 1 * CRT * N + 0 * N + z] = acc_n0_1 % q0;
-    d_out[base + 1 * CRT * N + 1 * N + z] = acc_n1_1 % q1;
+    d_out[base + 0 * CRT * N + 0 * N + z] = barrett_reduce_u64(acc_n0_0, d_bc0);
+    d_out[base + 0 * CRT * N + 1 * N + z] = barrett_reduce_u64(acc_n1_0, d_bc1);
+    d_out[base + 1 * CRT * N + 0 * N + z] = barrett_reduce_u64(acc_n0_1, d_bc0);
+    d_out[base + 1 * CRT * N + 1 * N + z] = barrett_reduce_u64(acc_n1_1, d_bc1);
 }
 
 // ── db_multiply_batch_kernel ──────────────────────────────────────────────────
@@ -172,10 +173,10 @@ __global__ void db_multiply_batch_kernel(
 
         // Reduce every 128 steps to avoid overflow
         if ((j & 127) == 127) {
-            acc_n0_0 %= q0;
-            acc_n0_1 %= q0;
-            acc_n1_0 %= q1;
-            acc_n1_1 %= q1;
+            acc_n0_0 = barrett_reduce_u64(acc_n0_0, d_bc0);
+            acc_n0_1 = barrett_reduce_u64(acc_n0_1, d_bc0);
+            acc_n1_0 = barrett_reduce_u64(acc_n1_0, d_bc1);
+            acc_n1_1 = barrett_reduce_u64(acc_n1_1, d_bc1);
         }
     }
 
@@ -183,10 +184,10 @@ __global__ void db_multiply_batch_kernel(
     const size_t base = (static_cast<size_t>(b) * num_per * 2 + static_cast<size_t>(ii) * 2)
                         * CRT * N;
 
-    d_out[base + 0 * CRT * N + 0 * N + z] = acc_n0_0 % q0;  // row=0, crt=0
-    d_out[base + 0 * CRT * N + 1 * N + z] = acc_n1_0 % q1;  // row=0, crt=1
-    d_out[base + 1 * CRT * N + 0 * N + z] = acc_n0_1 % q0;  // row=1, crt=0
-    d_out[base + 1 * CRT * N + 1 * N + z] = acc_n1_1 % q1;  // row=1, crt=1
+    d_out[base + 0 * CRT * N + 0 * N + z] = barrett_reduce_u64(acc_n0_0, d_bc0);  // row=0, crt=0
+    d_out[base + 0 * CRT * N + 1 * N + z] = barrett_reduce_u64(acc_n1_0, d_bc1);  // row=0, crt=1
+    d_out[base + 1 * CRT * N + 0 * N + z] = barrett_reduce_u64(acc_n0_1, d_bc0);  // row=1, crt=0
+    d_out[base + 1 * CRT * N + 1 * N + z] = barrett_reduce_u64(acc_n1_1, d_bc1);  // row=1, crt=1
 }
 
 // ── db_multiply_batch_gpu ─────────────────────────────────────────────────────

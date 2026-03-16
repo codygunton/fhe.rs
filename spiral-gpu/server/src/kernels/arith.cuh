@@ -67,12 +67,7 @@ __device__ __forceinline__ uint64_t mod_neg(uint64_t a, uint64_t modulus) {
 // Modular multiplication using Barrett reduction.
 // Inputs must be < modulus.
 __device__ __forceinline__ uint64_t barrett_mul(uint64_t a, uint64_t b, const BarrettConst& bc) {
-    // Full 128-bit product, then reduce mod bc.modulus
-    unsigned __int128 prod = static_cast<unsigned __int128>(a) * b;
-    // Two-step Barrett on 128-bit: reduce by modulus
-    // Simple approach: use __uint128_t % (but that's slow; a proper 128-bit Barrett
-    // reduction is implemented in arith.cu for hot paths)
-    return static_cast<uint64_t>(prod % bc.modulus);
+    return barrett_reduce_u64(a * b, bc);  // a,b < 2^28 → product < 2^56 < 2^64
 }
 
 // CRT unpack helpers: extract mod0 / mod1 values from a CRT-packed u64.

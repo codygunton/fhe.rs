@@ -65,6 +65,7 @@ __global__ void gadget_invert_kernel(
     const uint64_t mask     = bits_per < 64 ? ((1ULL << bits_per) - 1ULL) : ~0ULL;
 
     // Stride loop: each thread handles multiple coefficients (blockDim.x <= 1024 < N=2048)
+#pragma unroll 2
     for (uint32_t z = threadIdx.x; z < N; z += blockDim.x) {
         const uint64_t inp_val = d_inp[(inp_poly_idx * CRT + crt) * N + z];
         const uint64_t out_val = (inp_val >> bit_offs) & mask;

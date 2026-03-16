@@ -41,23 +41,22 @@ __global__ void poly_mat_mul_kernel(
     const uint32_t out_row = cell / p;
     const uint32_t out_col = cell % p;
 
-    const uint64_t modulus = (crt == 0) ? SpiralParams::MODULUS_0 : SpiralParams::MODULUS_1;
+    const BarrettConst& bc = (crt == 0) ? d_bc0 : d_bc1;
+    const uint32_t out_idx = (out_row * p + out_col) * CRT + crt;
 
     // Stride loop: each thread handles multiple coefficients (blockDim.x <= 1024 < N=2048)
+#pragma unroll 2
     for (uint32_t z = threadIdx.x; z < N; z += blockDim.x) {
-        // Accumulate sum in u128 over n_dim terms
-        unsigned __int128 acc = 0;
+        uint64_t acc = 0;
         for (uint32_t k = 0; k < n_dim; ++k) {
             const uint32_t a_idx = (out_row * n_dim + k) * CRT + crt;
             const uint32_t b_idx = (k * p + out_col) * CRT + crt;
             const uint64_t av = d_a[a_idx * N + z];
             const uint64_t bv = d_b[b_idx * N + z];
-            acc += static_cast<unsigned __int128>(av) * bv;
+            acc += av * bv;  // safe: av,bv < 2^28 → product < 2^56; 128 products < 2^63
+            if ((k & 127) == 127) acc = barrett_reduce_u64(acc, bc);
         }
-
-        uint64_t result = static_cast<uint64_t>(acc % modulus);
-        const uint32_t out_idx = (out_row * p + out_col) * CRT + crt;
-        d_out[out_idx * N + z] = result;
+        d_out[out_idx * N + z] = barrett_reduce_u64(acc, bc);
     }
 }
 
@@ -213,21 +212,22 @@ __global__ void poly_mat_mul_acum_kernel(
     const uint32_t cell    = block_id / CRT;
     const uint32_t out_row = cell / p;
     const uint32_t out_col = cell % p;
-    const uint64_t modulus = (crt == 0) ? SpiralParams::MODULUS_0 : SpiralParams::MODULUS_1;
+    const BarrettConst& bc = (crt == 0) ? d_bc0 : d_bc1;
 
     // Stride loop: each thread handles multiple coefficients (blockDim.x <= 1024 < N=2048)
+#pragma unroll 2
     for (uint32_t z = threadIdx.x; z < N; z += blockDim.x) {
-        unsigned __int128 acc = static_cast<unsigned __int128>(
-            d_out[(out_row * p + out_col) * CRT * N + crt * N + z]);
+        uint64_t acc = d_out[(out_row * p + out_col) * CRT * N + crt * N + z];
 
         for (uint32_t k = 0; k < n_dim; ++k) {
             const uint64_t av = d_a[(out_row * n_dim + k) * CRT * N + crt * N + z];
             const uint64_t bv = d_b[(k * p + out_col) * CRT * N + crt * N + z];
-            acc += static_cast<unsigned __int128>(av) * bv;
+            acc += av * bv;  // safe: av,bv < 2^28 → product < 2^56; 128 products < 2^63
+            if ((k & 127) == 127) acc = barrett_reduce_u64(acc, bc);
         }
 
         d_out[(out_row * p + out_col) * CRT * N + crt * N + z] =
-            static_cast<uint64_t>(acc % modulus);
+            barrett_reduce_u64(acc, bc);
     }
 }
 
